@@ -54,7 +54,8 @@ namespace ClassLibrary1
         private void button2_Click(object sender, EventArgs e)
         {
             if (startCTX != null) { startCTX.Cancel(); }
-            this._SyncProvider.DeleteLocalData();
+
+            this._SyncProvider.RevertAllPlaceholders(new System.Threading.CancellationToken() );
         }
 
         private void button3_Click(object sender, EventArgs e)
