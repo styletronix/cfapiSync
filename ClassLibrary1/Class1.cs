@@ -7,37 +7,31 @@ using Vanara.PInvoke;
 using System.Linq;
 using System.IO;
 using Styletronix.CloudSyncProvider;
-using Windows.Win32.Storage;
-
 using System.Threading.Tasks;
 using System.Threading;
-using Windows.Storage.Provider;
 using static Styletronix.CloudFilterApi.SafeHandlers;
 using static Styletronix.CloudFilterApi;
+using static Vanara.PInvoke.CldApi;
+using Windows.Storage.Provider;
+using System.Threading.Tasks.Dataflow;
 
 public class SyncProviderUtils
 {
-    public static Ole32.PROPERTYKEY PKEY_StorageProviderTransferProgress => new Ole32.PROPERTYKEY(new Guid("{e77e90df-6271-4f5b-834f-2dd1f245dda4}"), 4);
-    public static void AddFileIdentity(ref CldApi.CF_PLACEHOLDER_CREATE_INFO placeholder, string fileIdentity)
+    //public static Ole32.PROPERTYKEY PKEY_StorageProviderTransferProgress => new Ole32.PROPERTYKEY(new Guid("{e77e90df-6271-4f5b-834f-2dd1f245dda4}"), 4);
+
+    public static void ApplyTransferStateToFile(in CF_CONNECTION_KEY connectionKey, in CF_TRANSFER_KEY transferKey, long total, long completed)
     {
-        placeholder.FileIdentity = Marshal.StringToCoTaskMemUni(fileIdentity);
-        placeholder.FileIdentityLength = (uint)(fileIdentity.Length * Marshal.SizeOf(fileIdentity[0]));
+        Styletronix.Debug.LogResponse(CfReportProviderProgress(connectionKey, transferKey, total, completed));
     }
 
-
-
-    public static void ApplyTransferStateToFile(in CldApi.CF_CONNECTION_KEY connectionKey, in CldApi.CF_TRANSFER_KEY transferKey, long total, long completed)
-    {
-        LoggResponse(CldApi.CfReportProviderProgress(connectionKey, transferKey, total, completed));
-    }
 
     public class DataActions
     {
         public long FileOffset;
         public long Length;
         public string NormalizedPath;
-        public CldApi.CF_TRANSFER_KEY TransferKey;
-        public CldApi.CF_REQUEST_KEY RequestKey;
+        public CF_TRANSFER_KEY TransferKey;
+        public CF_REQUEST_KEY RequestKey;
         public byte PriorityHint;
         public CancellationTokenSource CancellationTokenSource;
         public Guid guid = Guid.NewGuid();
@@ -63,7 +57,7 @@ public class SyncProviderUtils
         public long RangeStart;
         public long RangeEnd;
         public string NormalizedPath;
-        public CldApi.CF_TRANSFER_KEY TransferKey;
+        public CF_TRANSFER_KEY TransferKey;
         public byte PriorityHint;
     }
     public class SyncContext
@@ -75,19 +69,12 @@ public class SyncProviderUtils
 
         public string LocalRootFolderNormalized;
 
-        public CldApi.CF_CONNECTION_KEY ConnectionKey;
+        public CF_CONNECTION_KEY ConnectionKey;
 
-        public iServerFileProvider ServerProvider;
+        public IServerFileProvider ServerProvider;
         public SyncProviderParameters SyncProviderParameter;
     }
 
-    public static void LoggResponse(HRESULT hResult)
-    {
-        if (hResult != HRESULT.S_OK)
-        {
-            Debug.WriteLine(hResult);
-        }
-    }
 
     class SafeAllocCoTaskMem : IDisposable
     {
@@ -138,42 +125,42 @@ public class SyncProviderUtils
 
 public class SyncProvider : IDisposable
 {
-    private CldApi.CF_CALLBACK_REGISTRATION[] _callbackMappings;
+    private CF_CALLBACK_REGISTRATION[] _callbackMappings;
     private bool _isConnected;
     private FileSystemWatcher watcher;
-    private System.Collections.Concurrent.BlockingCollection<FileSystemEventArgs> ChangedDataQueue;
-    private Task ChangedDataWorkerThread;
+
     private CancellationTokenSource ChangedDataCancellationTokenSource;
-    private SyncProviderUtils.SyncContext SyncContext;
-    private System.Collections.Concurrent.ConcurrentDictionary<string, string> filesToCheck;
-    private FileFetchHelper2 fileFetchHelper = new();
+    private readonly SyncProviderUtils.SyncContext SyncContext;
+
+    private readonly FileFetchHelper2 fileFetchHelper = new();
 
 
     public class FileFetchHelper2 : IDisposable
     {
         private readonly object lockObject = new();
         private readonly List<SyncProviderUtils.FetchRange> filesToProcess = new();
-        private readonly AutoResetEvent _waitForNewItem = new(false);
+        //private readonly AutoResetEvent _waitForNewItem = new(false);
+        private readonly AutoResetEventAsync autoResetEventAsync = new AutoResetEventAsync();
         private readonly CancellationTokenSource cancellationToken = new();
 
         public FileFetchHelper2()
         {
-            cancellationToken.Token.Register(() => _waitForNewItem.Close());
+            //cancellationToken.Token.Register(() => _waitForNewItem.Close());
         }
 
-        public AutoResetEvent Waiter => this._waitForNewItem;
+        //public AutoResetEvent Waiter => this._waitForNewItem;
         public CancellationToken CancellationToken { get { return cancellationToken.Token; } }
-        public SyncProviderUtils.FetchRange WaitTakeNext()
+        public async Task<SyncProviderUtils.FetchRange> WaitTakeNextAsync()
         {
             var x = this.TakeNext();
 
             if (x == null)
             {
-                _waitForNewItem.WaitOne();
-
+                //   _waitForNewItem.WaitOne();
+                await autoResetEventAsync.WaitAsync(this.CancellationToken);
                 lock (lockObject)
                 {
-                    _waitForNewItem.Reset();
+                    //_waitForNewItem.Reset();
                     var t = TakeNext();
                     return t;
                 }
@@ -235,8 +222,8 @@ public class SyncProvider : IDisposable
             }
 
 
-
-            this._waitForNewItem.Set();
+            this.autoResetEventAsync.Set();
+            //this._waitForNewItem.Set();
         }
         private void Combine(string normalizedPath)
         {
@@ -337,6 +324,14 @@ public class SyncProvider : IDisposable
                 Length = rangeEnd - rangeStart
             });
         }
+        public void Cancel(string normalizedPath)
+        {
+            RemoveRange(normalizedPath, 0, long.MaxValue);
+        }
+
+
+
+
 
         private bool disposedValue;
         protected virtual void Dispose(bool disposing)
@@ -367,235 +362,6 @@ public class SyncProvider : IDisposable
         }
     }
 
-    public class FileFetchHelper : IDisposable
-    {
-        private readonly object filesToProcessLockObject = new();
-        private readonly List<SyncProviderUtils.DataActions> filesToProcess = new();
-        private readonly AutoResetEvent _waitForNewItem = new(false);
-        private readonly CancellationTokenSource cancellationToken = new();
-
-        public FileFetchHelper()
-        {
-            cancellationToken.Token.Register(() => _waitForNewItem.Close());
-        }
-
-        public AutoResetEvent Waiter => this._waitForNewItem;
-        public CancellationToken CancellationToken { get { return cancellationToken.Token; } }
-        public SyncProviderUtils.DataActions WaitTakeNext()
-        {
-            var x = this.TakeNext();
-
-            if (x == null)
-            {
-                _waitForNewItem.WaitOne();
-                lock (filesToProcessLockObject)
-                {
-                    _waitForNewItem.Reset();
-                    var t = TakeNext();
-                    lastTaken = t;
-                    return t;
-                }
-            }
-            else
-            {
-                return x;
-            }
-        }
-        public SyncProviderUtils.DataActions TakeNext()
-        {
-            SyncProviderUtils.DataActions ret = null;
-
-            lock (filesToProcessLockObject)
-            {
-                ret = this.filesToProcess.OrderByDescending(a => a.PriorityHint)
-                    .OrderBy(a => a.FileOffset).FirstOrDefault();
-
-                if (ret != null) { this.filesToProcess.Remove(ret); }
-            }
-
-            return ret;
-        }
-        //public SyncProviderUtils.DataActions TakeNext(string normalizedPath)
-        //{
-        //    SyncProviderUtils.DataActions ret = null;
-
-        //    lock (filesToProcessLockObject)
-        //    {
-        //        ret = this.filesToProcess.Where(a => a.NormalizedPath == normalizedPath)
-        //            .OrderBy(a => a.FileOffset).FirstOrDefault();
-
-        //        if (ret != null) { this.filesToProcess.Remove(ret); }
-        //    }
-
-        //    return ret;
-        //}
-        private SyncProviderUtils.DataActions lastTaken;
-        public SyncProviderUtils.DataActions TakeNext(string normalizedPath, long offset)
-        {
-            SyncProviderUtils.DataActions ret = null;
-
-            lock (filesToProcessLockObject)
-            {
-                ret = this.filesToProcess.Where(a => a.NormalizedPath == normalizedPath && a.FileOffset >= offset)
-                    .OrderBy(a => a.FileOffset).FirstOrDefault();
-
-                if (ret != null)
-                {
-                    this.filesToProcess.Remove(ret);
-                    lastTaken = ret;
-                }
-            }
-
-            return ret;
-        }
-        public List<SyncProviderUtils.DataActions> TakeNextRange(string normalizedPath, long offset, long blockSize)
-        {
-            List<SyncProviderUtils.DataActions> ret = new();
-            lock (filesToProcessLockObject)
-            {
-                long currentOffset = offset;
-
-                foreach (var item in this.filesToProcess.Where(a => a.NormalizedPath == normalizedPath && a.FileOffset >= offset)
-                     .OrderBy(a => a.FileOffset))
-                {
-                    if (item.FileOffset == currentOffset)
-                    {
-                        currentOffset = item.FileOffset + item.Length;
-                        if (currentOffset - offset > blockSize) { break; }
-
-                        ret.Add(item);
-                        this.filesToProcess.Remove(item);
-                        lastTaken = item;
-                    }
-
-                }
-            }
-
-            return ret;
-        }
-        public void Add(SyncProviderUtils.DataActions data)
-        {
-            //var low = data.FileOffset;
-            //var high = data.FileOffset + data.Length;
-
-            //lock (filesToProcessLockObject)
-            //{
-            //foreach (var item in this.filesToProcess)
-            //{
-            //    if (!item.CancellationTokenSource.IsCancellationRequested && item.NormalizedPath == data.NormalizedPath)
-            //    {
-            //        if (item.FileOffset  <= low && item.FileOffset + item.Length >= high)
-            //        {
-            //            // Falls within Range of existing item: Extend Length.
-            //            //item.Length = Math.Max((high - item.FileOffset), item.Length);
-            //            //Debug.WriteLine(@"Change Queue Length to " + item.Length);
-            //            return;
-            //        }
-            //    }
-            //}
-
-            // Add as New Entry if not found
-            data.CancellationTokenSource = new();
-            lock (filesToProcessLockObject)
-            {
-                this.filesToProcess.Add(data);
-            }
-            Debug.WriteLine("Add to Queue " + data.FileOffset + @" - " + data.Length);
-            //}
-
-            this._waitForNewItem.Set();
-        }
-        public void Cancel(SyncProviderUtils.DataActions data)
-        {
-            //lock (filesToProcessLockObject)
-            //{
-            var remove = new List<SyncProviderUtils.DataActions>();
-
-
-            lock (filesToProcessLockObject)
-            {
-                if (lastTaken?.Id == data.Id)
-                {
-                    lastTaken.CancellationTokenSource.Cancel();
-                }
-
-                foreach (var item in this.filesToProcess)
-                {
-                    if (item.Id == data.Id)
-                    {
-                        item.CancellationTokenSource.Cancel();
-                        remove.Add(item);
-                    }
-                    //if (item.NormalizedPath == data.NormalizedPath)
-                    //{
-                    //    if (item.FileOffset >= data.FileOffset && (item.FileOffset + item.Length) <= (data.FileOffset + data.Length))
-                    //    {
-                    //        Debug.WriteLine("Cancel Block " + item.FileOffset + " - " + item.Length);
-                    //        item.CancellationTokenSource.Cancel();
-                    //        remove.Add(item);
-                    //    }
-                    //}
-                }
-            }
-
-            lock (filesToProcessLockObject)
-            {
-                foreach (var item in remove)
-                {
-                    this.filesToProcess.Remove(item);
-                }
-            }
-
-            //}
-        }
-        //public long Finalize(SyncProviderUtils.DataActions data)
-        //{
-        //    long ret;
-
-        //    lock (filesToProcessLockObject)
-        //    {
-        //        ret = data.Length;
-        //        this.filesToProcess.Remove(data);
-        //    }
-
-        //    return ret;
-        //}
-
-        private bool disposedValue;
-        protected virtual void Dispose(bool disposing)
-        {
-            if (!disposedValue)
-            {
-                if (disposing)
-                {
-                    this.cancellationToken.Cancel();
-                }
-
-                disposedValue = true;
-            }
-        }
-
-        // // TODO: Finalizer nur überschreiben, wenn "Dispose(bool disposing)" Code für die Freigabe nicht verwalteter Ressourcen enthält
-        // ~FileFetchHelper()
-        // {
-        //     // Ändern Sie diesen Code nicht. Fügen Sie Bereinigungscode in der Methode "Dispose(bool disposing)" ein.
-        //     Dispose(disposing: false);
-        // }
-
-        public void Dispose()
-        {
-            // Ändern Sie diesen Code nicht. Fügen Sie Bereinigungscode in der Methode "Dispose(bool disposing)" ein.
-            Dispose(disposing: true);
-            GC.SuppressFinalize(this);
-        }
-    }
-
-
-    public class FileData
-    {
-        public Exception lastException;
-        public DateTime lastTry;
-    }
 
     public SyncProvider(SyncProviderParameters parameter)
     {
@@ -611,28 +377,29 @@ public class SyncProvider : IDisposable
         this.FetchDataQueue = new System.Collections.Concurrent.BlockingCollection<SyncProviderUtils.DataActions>();
         this.FetchDataRunningQueue = new System.Collections.Concurrent.ConcurrentDictionary<Guid, SyncProviderUtils.DataActions>();
         this.FetchDataWorkerThread = FetchDataWorker();
-        this.filesToCheck = new System.Collections.Concurrent.ConcurrentDictionary<string, string>();
+
+        this.DeleteQueue = new(NOTIFY_DELETE_Action);
     }
 
     public string GetSyncRootID()
     {
         string syncRootID = this.SyncContext.SyncProviderParameter.ProviderInfo.ProviderId.ToString();
         syncRootID += @"!";
-        syncRootID += System.DirectoryServices.AccountManagement.UserPrincipal.Current.Sid.Value;
+        syncRootID += System.Security.Principal.WindowsIdentity.GetCurrent().User.Value; // System.DirectoryServices.AccountManagement.UserPrincipal.Current.Sid.Value;
         syncRootID += @"!";
         syncRootID += this.SyncContext.LocalRootFolder.GetHashCode();  // Provider Account -> Used Hash of LocalPath asuming that no Account would be synchronized to the same Folder.
         return syncRootID;
     }
+
     public async Task Register()
     {
         if (StorageProviderSyncRootManager.IsSupported() == false)
         {
-            Debug.WriteLine("OS not supported!");
+            Styletronix.Debug.WriteLine("OS not supported!");
             throw new NotSupportedException();
         }
 
         var path = await Windows.Storage.StorageFolder.GetFolderFromPathAsync(this.SyncContext.LocalRootFolder);
-
 
         var SyncRootInfo = new StorageProviderSyncRootInfo
         {
@@ -641,20 +408,23 @@ public class SyncProvider : IDisposable
             DisplayNameResource = this.SyncContext.SyncProviderParameter.ProviderInfo.ProviderName,
             HardlinkPolicy = StorageProviderHardlinkPolicy.None,
             HydrationPolicy = StorageProviderHydrationPolicy.Partial,
-            HydrationPolicyModifier = StorageProviderHydrationPolicyModifier.AutoDehydrationAllowed | StorageProviderHydrationPolicyModifier.StreamingAllowed,
+
+            HydrationPolicyModifier = StorageProviderHydrationPolicyModifier.AutoDehydrationAllowed |
+            StorageProviderHydrationPolicyModifier.StreamingAllowed |
+            StorageProviderHydrationPolicyModifier.AllowFullRestartHydration,
+
             InSyncPolicy = StorageProviderInSyncPolicy.FileLastWriteTime,
             Path = path,
             PopulationPolicy = StorageProviderPopulationPolicy.Full,
             ProtectionMode = StorageProviderProtectionMode.Personal,
             ProviderId = this.SyncContext.SyncProviderParameter.ProviderInfo.ProviderId,
             Version = this.SyncContext.SyncProviderParameter.ProviderInfo.ProviderVersion,
-            IconResource = @"%SystemRoot%\system32\charmap.exe,0",
-            ShowSiblingsAsGroup = true,
+            IconResource = @"C:\WINDOWS\system32\imageres.dll,-1043",
+            ShowSiblingsAsGroup = false,
             RecycleBinUri = null,
             Context = Windows.Security.Cryptography.CryptographicBuffer.ConvertStringToBinary(GetSyncRootID(), Windows.Security.Cryptography.BinaryStringEncoding.Utf8)
         };
-        // Context is currently not used
-        // RecycleBinUri = new Uri(@"http://cloudmirror.example.com/recyclebin"),
+        SyncRootInfo.StorageProviderItemPropertyDefinitions.Add(new StorageProviderItemPropertyDefinition() { DisplayNameResource = "Beschreibung", Id = 0 });
 
         StorageProviderSyncRootManager.Register(SyncRootInfo);
 
@@ -703,46 +473,59 @@ public class SyncProvider : IDisposable
         //    }
         //}
         //}
+
+        // Not required anymore.... Will automatically added  during StorageProviderSyncRootManager.Register
+        // Add to Explorer
+        //try
+        //{
+        //    Microsoft.Win32.RegistryKey CLSIDkey = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Classes\CLSID", true).CreateSubKey(this.SyncContext.SyncProviderParameter.ProviderInfo.CLSID, true);
+        //    CLSIDkey.SetValue("", this.SyncContext.SyncProviderParameter.ProviderInfo.ProviderName, Microsoft.Win32.RegistryValueKind.String);
+        //    CLSIDkey.SetValue(@"System.IsPinnedToNameSpaceTree", 1, Microsoft.Win32.RegistryValueKind.DWord);
+
+        //    CLSIDkey.CreateSubKey("DefaultIcon", true).SetValue("", @"C:\WINDOWS\system32\imageres.dll,-1043", Microsoft.Win32.RegistryValueKind.ExpandString);
+        //    CLSIDkey.CreateSubKey("InProcServer32", true).SetValue("", @"C:\WINDOWS\system32\shell32.dll", Microsoft.Win32.RegistryValueKind.ExpandString);
+
+        //    Microsoft.Win32.RegistryKey InstanceKey = CLSIDkey.CreateSubKey("Instance", true);
+        //    InstanceKey.SetValue("CLSID", @"{0E5AAE11-A475-4c5b-AB00-C66DE400274E} ", Microsoft.Win32.RegistryValueKind.String);
+
+        //    Microsoft.Win32.RegistryKey InitPropertyBagKey = InstanceKey.CreateSubKey(@"InitPropertyBag", true);
+        //    InitPropertyBagKey.SetValue("TargetFolderPath", this.SyncContext.LocalRootFolder, Microsoft.Win32.RegistryValueKind.ExpandString);
+        //    InitPropertyBagKey.SetValue("Attributes", 17, Microsoft.Win32.RegistryValueKind.DWord);
+
+        //    Microsoft.Win32.RegistryKey ShellFolderKey = CLSIDkey.CreateSubKey(@"ShellFolder", true);
+        //    ShellFolderKey.SetValue("Attributes", unchecked((int)0xF080004D), Microsoft.Win32.RegistryValueKind.DWord);
+        //    ShellFolderKey.SetValue("FolderValueFlags", 40, Microsoft.Win32.RegistryValueKind.DWord);
+
+        //    Microsoft.Win32.RegistryKey NameSpacekey = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\Desktop\NameSpace", true).CreateSubKey(this.SyncContext.SyncProviderParameter.ProviderInfo.CLSID, true);
+        //    NameSpacekey.SetValue("", this.SyncContext.SyncProviderParameter.ProviderInfo.ProviderName, Microsoft.Win32.RegistryValueKind.String);
+
+        //    Microsoft.Win32.RegistryKey NewStartPanelkey = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\HideDesktopIcons\NewStartPanel", true);
+        //    NewStartPanelkey.SetValue(this.SyncContext.SyncProviderParameter.ProviderInfo.CLSID, 1, Microsoft.Win32.RegistryValueKind.DWord);
+        //}
+        //catch (Exception ex)
+        //{
+        //    Styletronix.Debug.WriteLine(ex.Message);
+        //}
         #endregion
-
-
-        // TODO: Verify reqirement of the registry entries.
-        try
-        {
-            Microsoft.Win32.RegistryKey CLSIDkey = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Classes\CLSID", true).CreateSubKey(this.SyncContext.SyncProviderParameter.ProviderInfo.CLSID, true);
-            CLSIDkey.SetValue("", this.SyncContext.SyncProviderParameter.ProviderInfo.ProviderName, Microsoft.Win32.RegistryValueKind.String);
-            CLSIDkey.SetValue(@"System.IsPinnedToNameSpaceTree", 1, Microsoft.Win32.RegistryValueKind.DWord);
-
-            CLSIDkey.CreateSubKey("DefaultIcon", true).SetValue("", @"C:\WINDOWS\system32\imageres.dll,-1043", Microsoft.Win32.RegistryValueKind.ExpandString);
-            CLSIDkey.CreateSubKey("InProcServer32", true).SetValue("", @"C:\WINDOWS\system32\shell32.dll", Microsoft.Win32.RegistryValueKind.ExpandString);
-
-            Microsoft.Win32.RegistryKey InstanceKey = CLSIDkey.CreateSubKey("Instance", true);
-            InstanceKey.SetValue("CLSID", @"{0E5AAE11-A475-4c5b-AB00-C66DE400274E} ", Microsoft.Win32.RegistryValueKind.String);
-
-            Microsoft.Win32.RegistryKey InitPropertyBagKey = InstanceKey.CreateSubKey(@"InitPropertyBag", true);
-            InitPropertyBagKey.SetValue("TargetFolderPath", this.SyncContext.LocalRootFolder, Microsoft.Win32.RegistryValueKind.ExpandString);
-            InitPropertyBagKey.SetValue("Attributes", 17, Microsoft.Win32.RegistryValueKind.DWord);
-
-            Microsoft.Win32.RegistryKey ShellFolderKey = CLSIDkey.CreateSubKey(@"ShellFolder", true);
-            ShellFolderKey.SetValue("Attributes", unchecked((int)0xF080004D), Microsoft.Win32.RegistryValueKind.DWord);
-            ShellFolderKey.SetValue("FolderValueFlags", 40, Microsoft.Win32.RegistryValueKind.DWord);
-
-            Microsoft.Win32.RegistryKey NameSpacekey = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\Desktop\NameSpace", true).CreateSubKey(this.SyncContext.SyncProviderParameter.ProviderInfo.CLSID, true);
-            NameSpacekey.SetValue("", this.SyncContext.SyncProviderParameter.ProviderInfo.ProviderName, Microsoft.Win32.RegistryValueKind.String);
-
-            Microsoft.Win32.RegistryKey NewStartPanelkey = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\HideDesktopIcons\NewStartPanel", true);
-            NewStartPanelkey.SetValue(this.SyncContext.SyncProviderParameter.ProviderInfo.CLSID, 1, Microsoft.Win32.RegistryValueKind.DWord);
-        }
-        catch (Exception ex)
-        {
-            Debug.WriteLine(ex.Message);
-        }
     }
+    public string GetSyncRootManagerRegistryKeyHKLM()
+    {
+        return @"Software\Microsoft\Windows\CurrentVersion\Explorer\SyncRootManager\" + GetSyncRootID();
+    }
+    public string GetNamespaceCLSID()
+    {
+        return (string)Microsoft.Win32.Registry.LocalMachine.OpenSubKey(GetSyncRootManagerRegistryKeyHKLM(), false).GetValue("NamespaceCLSID");
+    }
+    public string GetSyncRootManagerNameSpaceRegistryKeyHKCU()
+    {
+        return @"Software\Microsoft\Windows\CurrentVersion\Explorer\Desktop\NameSpace\" + GetNamespaceCLSID();
+    }
+
     public void Unregister()
     {
         Stop();
 
-        Debug.WriteLine("Unregister");
+        Styletronix.Debug.WriteLine("Unregister");
 
         try
         {
@@ -750,28 +533,45 @@ public class SyncProvider : IDisposable
         }
         catch (Exception ex)
         {
-            Debug.WriteLine(ex.Message);
+            Styletronix.Debug.WriteLine(ex.Message);
         }
 
 
-        try
-        {
-            Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Classes\CLSID", true).DeleteSubKeyTree(this.SyncContext.SyncProviderParameter.ProviderInfo.CLSID, false);
-            Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\Desktop\NameSpace", true).DeleteSubKeyTree(this.SyncContext.SyncProviderParameter.ProviderInfo.CLSID, false);
-            Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\HideDesktopIcons\NewStartPanel", true).DeleteSubKey(this.SyncContext.SyncProviderParameter.ProviderInfo.CLSID, false);
-        }
-        catch (Exception ex)
-        {
-            Debug.WriteLine(ex.Message);
-        }
+        //try
+        //{
+        //    Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Classes\CLSID", true).DeleteSubKeyTree(this.SyncContext.SyncProviderParameter.ProviderInfo.CLSID, false);
+        //    Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\Desktop\NameSpace", true).DeleteSubKeyTree(this.SyncContext.SyncProviderParameter.ProviderInfo.CLSID, false);
+        //    Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\HideDesktopIcons\NewStartPanel", true).DeleteSubKey(this.SyncContext.SyncProviderParameter.ProviderInfo.CLSID, false);
+        //}
+        //catch (Exception ex)
+        //{
+        //    Styletronix.Debug.WriteLine(ex.Message);
+        //}
 
     }
     public async Task SyncDataAsync(SyncMode syncMode, CancellationToken ctx)
     {
-        await Task.Run(() =>
+        switch (syncMode)
         {
-            FindLocalChangedDataRecursive(this.SyncContext.LocalRootFolder, ctx, syncMode);
-        }, ctx);
+            case SyncMode.Local:
+                CfUpdateSyncProviderStatus(this.SyncContext.ConnectionKey, CF_SYNC_PROVIDER_STATUS.CF_PROVIDER_STATUS_SYNC_INCREMENTAL);
+                break;
+            case SyncMode.Full:
+                CfUpdateSyncProviderStatus(this.SyncContext.ConnectionKey, CF_SYNC_PROVIDER_STATUS.CF_PROVIDER_STATUS_SYNC_FULL);
+                break;
+        }
+
+        try
+        {
+            await Task.Run(async () =>
+                    {
+                        await FindLocalChangedDataRecursive(this.SyncContext.LocalRootFolder, ctx, syncMode);
+                    }, ctx);
+        }
+        finally
+        {
+            CfUpdateSyncProviderStatus(this.SyncContext.ConnectionKey, CF_SYNC_PROVIDER_STATUS.CF_PROVIDER_STATUS_IDLE);
+        }
     }
     public async Task Start(CancellationToken ctx)
     {
@@ -780,123 +580,119 @@ public class SyncProvider : IDisposable
             Directory.CreateDirectory(this.SyncContext.LocalRootFolder);
         }
 
-        Debug.WriteLine("Register");
+        Styletronix.Debug.WriteLine("Register");
 
         await Register();
 
-        Debug.WriteLine("Connect");
+        Styletronix.Debug.WriteLine("Connect");
 
-        this._callbackMappings = new CldApi.CF_CALLBACK_REGISTRATION[]
+        this._callbackMappings = new CF_CALLBACK_REGISTRATION[]
       {
-          new CldApi.CF_CALLBACK_REGISTRATION {
-                    Callback = new CldApi.CF_CALLBACK(this.FETCH_PLACEHOLDERS),
-                    Type = CldApi.CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_FETCH_PLACEHOLDERS
+          new CF_CALLBACK_REGISTRATION {
+                    Callback = new CF_CALLBACK(this.FETCH_PLACEHOLDERS),
+                    Type = CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_FETCH_PLACEHOLDERS
                 } ,
-           new CldApi.CF_CALLBACK_REGISTRATION {
-                    Callback = new CldApi.CF_CALLBACK(this.CANCEL_FETCH_PLACEHOLDERS),
-                    Type = CldApi.CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_CANCEL_FETCH_PLACEHOLDERS
+           new CF_CALLBACK_REGISTRATION {
+                    Callback = new CF_CALLBACK(this.CANCEL_FETCH_PLACEHOLDERS),
+                    Type = CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_CANCEL_FETCH_PLACEHOLDERS
                 } ,
-          new CldApi.CF_CALLBACK_REGISTRATION {
-                    Callback = new CldApi.CF_CALLBACK(this.FETCH_DATA),
-                    Type = CldApi.CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_FETCH_DATA
+          new CF_CALLBACK_REGISTRATION {
+                    Callback = new CF_CALLBACK(this.FETCH_DATA),
+                    Type = CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_FETCH_DATA
                 } ,
-          new CldApi.CF_CALLBACK_REGISTRATION {
-                    Callback = new CldApi.CF_CALLBACK(this.CANCEL_FETCH_DATA),
-                    Type = CldApi.CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_CANCEL_FETCH_DATA
+          new CF_CALLBACK_REGISTRATION {
+                    Callback = new CF_CALLBACK(this.CANCEL_FETCH_DATA),
+                    Type = CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_CANCEL_FETCH_DATA
                 } ,
-          new CldApi.CF_CALLBACK_REGISTRATION {
-                    Callback = new CldApi.CF_CALLBACK(this.NOTIFY_FILE_OPEN_COMPLETION),
-                    Type = CldApi.CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_NOTIFY_FILE_OPEN_COMPLETION
+          new CF_CALLBACK_REGISTRATION {
+                    Callback = new CF_CALLBACK(this.NOTIFY_FILE_OPEN_COMPLETION),
+                    Type = CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_NOTIFY_FILE_OPEN_COMPLETION
                 } ,
-          new CldApi.CF_CALLBACK_REGISTRATION {
-                    Callback = new CldApi.CF_CALLBACK(this.NOTIFY_FILE_CLOSE_COMPLETION),
-                    Type = CldApi.CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_NOTIFY_FILE_CLOSE_COMPLETION
+          new CF_CALLBACK_REGISTRATION {
+                    Callback = new CF_CALLBACK(this.NOTIFY_FILE_CLOSE_COMPLETION),
+                    Type = CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_NOTIFY_FILE_CLOSE_COMPLETION
                 } ,
-           new CldApi.CF_CALLBACK_REGISTRATION {
-                    Callback = new CldApi.CF_CALLBACK(this.NOTIFY_DELETE),
-                    Type = CldApi.CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_NOTIFY_DELETE
+           new CF_CALLBACK_REGISTRATION {
+                    Callback = new CF_CALLBACK(this.NOTIFY_DELETE),
+                    Type = CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_NOTIFY_DELETE
                 } ,
-           new CldApi.CF_CALLBACK_REGISTRATION {
-                    Callback = new CldApi.CF_CALLBACK(this.NOTIFY_DELETE_COMPLETION),
-                    Type = CldApi.CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_NOTIFY_DELETE_COMPLETION
+           new CF_CALLBACK_REGISTRATION {
+                    Callback = new CF_CALLBACK(this.NOTIFY_DELETE_COMPLETION),
+                    Type = CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_NOTIFY_DELETE_COMPLETION
                 } ,
-           new CldApi.CF_CALLBACK_REGISTRATION {
-                    Callback = new CldApi.CF_CALLBACK(this.NOTIFY_RENAME),
-                    Type = CldApi.CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_NOTIFY_RENAME
+           new CF_CALLBACK_REGISTRATION {
+                    Callback = new CF_CALLBACK(this.NOTIFY_RENAME),
+                    Type = CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_NOTIFY_RENAME
                 } ,
-            new CldApi.CF_CALLBACK_REGISTRATION {
-                    Callback = new CldApi.CF_CALLBACK(this.NOTIFY_RENAME_COMPLETION),
-                    Type = CldApi.CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_NOTIFY_RENAME_COMPLETION
+            new CF_CALLBACK_REGISTRATION {
+                    Callback = new CF_CALLBACK(this.NOTIFY_RENAME_COMPLETION),
+                    Type = CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_NOTIFY_RENAME_COMPLETION
                 } ,
-             new CldApi.CF_CALLBACK_REGISTRATION {
-                    Callback = new CldApi.CF_CALLBACK(this.NOTIFY_DEHYDRATE),
-                    Type = CldApi.CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_NOTIFY_DEHYDRATE
+             new CF_CALLBACK_REGISTRATION {
+                    Callback = new CF_CALLBACK(this.NOTIFY_DEHYDRATE),
+                    Type = CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_NOTIFY_DEHYDRATE
                 } ,
-             new CldApi.CF_CALLBACK_REGISTRATION {
-                    Callback = new CldApi.CF_CALLBACK(this.NOTIFY_DEHYDRATE_COMPLETION),
-                    Type = CldApi.CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_NOTIFY_DEHYDRATE_COMPLETION
+             new CF_CALLBACK_REGISTRATION {
+                    Callback = new CF_CALLBACK(this.NOTIFY_DEHYDRATE_COMPLETION),
+                    Type = CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_NOTIFY_DEHYDRATE_COMPLETION
                 } ,
-             new CldApi.CF_CALLBACK_REGISTRATION {
-                    Callback = new CldApi.CF_CALLBACK(this.VALIDATE_DATA),
-                    Type = CldApi.CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_VALIDATE_DATA
+             new CF_CALLBACK_REGISTRATION {
+                    Callback = new CF_CALLBACK(this.VALIDATE_DATA),
+                    Type = CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_VALIDATE_DATA
                 } ,
-           CldApi.CF_CALLBACK_REGISTRATION.CF_CALLBACK_REGISTRATION_END
+           CF_CALLBACK_REGISTRATION.CF_CALLBACK_REGISTRATION_END
       };
 
         this.SyncContext.ConnectionKey = default;
 
-        HRESULT ret = CldApi.CfConnectSyncRoot(this.SyncContext.LocalRootFolder, _callbackMappings,
+        HRESULT ret = CfConnectSyncRoot(this.SyncContext.LocalRootFolder, _callbackMappings,
             IntPtr.Zero,
-            CldApi.CF_CONNECT_FLAGS.CF_CONNECT_FLAG_REQUIRE_PROCESS_INFO |
-            CldApi.CF_CONNECT_FLAGS.CF_CONNECT_FLAG_REQUIRE_FULL_FILE_PATH,
+            CF_CONNECT_FLAGS.CF_CONNECT_FLAG_REQUIRE_PROCESS_INFO |
+            CF_CONNECT_FLAGS.CF_CONNECT_FLAG_REQUIRE_FULL_FILE_PATH,
             out this.SyncContext.ConnectionKey);
 
         if (ret.Succeeded)
         {
             _isConnected = true;
-            Debug.WriteLine("Connected");
+            Styletronix.Debug.WriteLine("Connected");
         }
         else
         {
-            Debug.WriteLine("Connection failed!");
+            Styletronix.Debug.WriteLine("Connection failed!");
         }
         ret.ThrowIfFailed();
-
-        ret = CldApi.CfUpdateSyncProviderStatus(this.SyncContext.ConnectionKey, CldApi.CF_SYNC_PROVIDER_STATUS.CF_PROVIDER_STATUS_SYNC_INCREMENTAL);
-        if (ret.Succeeded == false) { Debug.WriteLine("Fehler bei CfUpdateSyncProviderStatus: " + ret.ToString()); }
-
 
 
         InitWatcher();
 
-        Debug.WriteLine("Initial Sync...");
-        await SyncDataAsync(SyncMode.Local, ctx);
+        Styletronix.Debug.WriteLine("Full Sync...");
+        await SyncDataAsync(SyncMode.Full, ctx);
 
-        ret = CldApi.CfUpdateSyncProviderStatus(this.SyncContext.ConnectionKey, CldApi.CF_SYNC_PROVIDER_STATUS.CF_PROVIDER_STATUS_IDLE);
-        if (ret.Succeeded == false) { Debug.WriteLine("Fehler bei CfUpdateSyncProviderStatus: " + ret.ToString()); }
+        ret = CfUpdateSyncProviderStatus(this.SyncContext.ConnectionKey, CF_SYNC_PROVIDER_STATUS.CF_PROVIDER_STATUS_IDLE);
+        if (ret.Succeeded == false) { Styletronix.Debug.WriteLine("Fehler bei CfUpdateSyncProviderStatus: " + ret.ToString()); }
 
-        Debug.WriteLine("Ready");
+        Styletronix.Debug.WriteLine("Ready");
     }
     public void Stop()
     {
         if (this._isConnected == false) { return; }
 
-        HRESULT ret = CldApi.CfDisconnectSyncRoot(this.SyncContext.ConnectionKey);
+        HRESULT ret = CfDisconnectSyncRoot(this.SyncContext.ConnectionKey);
         if (ret.Succeeded)
         {
             this._isConnected = false;
         }
-        Debug.WriteLine("DisconnectSyncRoot: " + ret.ToString());
+        Styletronix.Debug.WriteLine("DisconnectSyncRoot: " + ret.ToString());
 
-        CldApi.CfUpdateSyncProviderStatus(this.SyncContext.ConnectionKey, CldApi.CF_SYNC_PROVIDER_STATUS.CF_PROVIDER_STATUS_TERMINATED);
+        CfUpdateSyncProviderStatus(this.SyncContext.ConnectionKey, CF_SYNC_PROVIDER_STATUS.CF_PROVIDER_STATUS_TERMINATED);
     }
 
     public void DeleteLocalData()
     {
         this.Stop();
 
-        HRESULT ret = CldApi.CfUnregisterSyncRoot(this.SyncContext.LocalRootFolder);
-        Debug.WriteLine("UnregisterSyncRoot: " + ret.ToString());
+        HRESULT ret = CfUnregisterSyncRoot(this.SyncContext.LocalRootFolder);
+        Styletronix.Debug.WriteLine("UnregisterSyncRoot: " + ret.ToString());
 
         try
         {
@@ -907,48 +703,65 @@ public class SyncProvider : IDisposable
         }
         catch (Exception ex)
         {
-            Debug.WriteLine("Delete Root Folder: " + ex.ToString());
+            Styletronix.Debug.WriteLine("Delete Root Folder: " + ex.ToString());
         }
     }
     public async Task RevertAllPlaceholders(CancellationToken ctx)
     {
-        Debug.WriteLine("RevertAllPlaceholders");
+        Styletronix.Debug.WriteLine("RevertAllPlaceholders");
         this.StopWatcher();
 
-        foreach (var item in System.IO.Directory.EnumerateFileSystemEntries(this.SyncContext.LocalRootFolder, "*", SearchOption.AllDirectories))
+        Styletronix.Debug.WriteLine("TODO: RevertAllPlaceholders ASYNC");
+        foreach (var item in Directory.EnumerateFileSystemEntries(this.SyncContext.LocalRootFolder, "*", SearchOption.AllDirectories))
         {
+            bool succeeded = false;
             var pl = new ExtendedPlaceholderState(item);
             if (pl.isPlaceholder)
             {
-                if (pl.RevertPlaceholder())
+                if (pl.HydratePlaceholder().Succeeded)
                 {
-                    Debug.WriteLine("RevertPlaceholder OK: " + item);
+                    pl.SetPinState(CF_PIN_STATE.CF_PIN_STATE_PINNED);
+                    if (pl.RevertPlaceholder(false))
+                    {
+                        Styletronix.Debug.WriteLine("RevertPlaceholder OK: " + item);
+                    }
                 }
-                else
+
+                if (succeeded == false)
                 {
-                    Debug.WriteLine("RevertPlaceholder FAILED: " + item);
+                    Styletronix.Debug.WriteLine("RevertPlaceholder FAILED: " + item);
                 }
             }
         }
 
         this.Unregister();
+
+        await Task.CompletedTask;
     }
+
+
+
+    #region "Monitor and handle local file changes"
+    private ActionBlock<string> ChangedDataQueueBlock;
 
     private void InitWatcher()
     {
-        Debug.WriteLine("InitWatcher");
+        Styletronix.Debug.WriteLine("InitWatcher");
 
         StopWatcher();
 
-        this.ChangedDataQueue = new System.Collections.Concurrent.BlockingCollection<FileSystemEventArgs>();
         this.ChangedDataCancellationTokenSource = new CancellationTokenSource();
-        this.ChangedDataWorkerThread = StartNewChangedDataWorker(this.ChangedDataCancellationTokenSource.Token);
+        this.ChangedDataQueueBlock = new(ProcessFileChanged);
+        this.ChangedDataCancellationTokenSource.Token.Register(() => this.ChangedDataQueueBlock.Complete());
 
-        watcher = new FileSystemWatcher();
-        watcher.Path = this.SyncContext.LocalRootFolder;
-        watcher.IncludeSubdirectories = true;
-        watcher.NotifyFilter = NotifyFilters.Attributes | NotifyFilters.CreationTime | NotifyFilters.LastWrite | NotifyFilters.Size;
-        watcher.Filter = "*";
+
+        watcher = new FileSystemWatcher
+        {
+            Path = this.SyncContext.LocalRootFolder,
+            IncludeSubdirectories = true,
+            NotifyFilter = NotifyFilters.DirectoryName | NotifyFilters.FileName | NotifyFilters.Attributes | NotifyFilters.LastWrite | NotifyFilters.Size,
+            Filter = "*"
+        };
         watcher.Error += new ErrorEventHandler(FileSystemWatcher_OnError);
         watcher.Changed += new FileSystemEventHandler(FileSystemWatcher_OnChanged);
         watcher.Created += new FileSystemEventHandler(FileSystemWatcher_OnChanged);
@@ -958,14 +771,9 @@ public class SyncProvider : IDisposable
     {
         if (watcher != null)
         {
-            Debug.WriteLine("StopWatcher");
+            Styletronix.Debug.WriteLine("StopWatcher");
             watcher.EnableRaisingEvents = false;
             watcher.Dispose();
-        }
-
-        if (this.ChangedDataQueue != null)
-        {
-            this.ChangedDataQueue.CompleteAdding();
         }
 
         if (this.ChangedDataCancellationTokenSource != null)
@@ -973,184 +781,400 @@ public class SyncProvider : IDisposable
             this.ChangedDataCancellationTokenSource.Cancel();
         }
     }
+
     private void FileSystemWatcher_OnError(object sender, ErrorEventArgs e)
     {
-        Debug.WriteLine("FileSystemWatcher_OnError");
-        Debug.WriteLine(e.GetException().Message);
+        //TODO: Local Sync
+        Styletronix.Debug.WriteLine("FileSystemWatcher_OnError");
+        Styletronix.Debug.WriteLine(e.GetException().Message);
     }
     private void FileSystemWatcher_OnChanged(object sender, FileSystemEventArgs e)
     {
         //Debug.WriteLine("FileSystemWatcher_OnChanged: " + e.FullPath);
-
-        this.ChangedDataQueue.Add(e);
-        this.filesToCheck.TryAdd(e.FullPath, null);
+        this.ChangedDataQueueBlock.Post(e.FullPath);
+        //this.ChangedDataQueue.Add(e);
     }
 
-    private Task StartNewChangedDataWorker(CancellationToken ctx)
+    private async Task ProcessFileChanged(string path)
     {
-        return Task.Run(() =>
-        {
-            while (!ChangedDataQueue.IsCompleted)
-            {
-                if (ctx.IsCancellationRequested) { return; }
-
-                if (!ChangedDataQueue.TryTake(out FileSystemEventArgs data, -1, ctx)) { return; }
-                Thread.Sleep(100);
-
-                try
-                {
-                    ProcessChangedDataAsync(data, ctx).Wait(ctx);
-                }
-                catch (Exception ex)
-                {
-                    var fData = new FileData
-                    {
-                        lastTry = DateTime.Now,
-                        lastException = ex
-                    };
-
-                    //filesToProcess.AddOrUpdate(data.FullPath, fData, (k, v) => fData);
-                    Debug.WriteLine(ex.ToString());
-                }
-            }
-        }, ctx);
-    }
-    private async Task ProcessChangedDataAsync(FileSystemEventArgs e, CancellationToken ctx)
-    {
-        using ExtendedPlaceholderState localPlaceHolder = new(e.FullPath);
-
-        #region "Convert to Placeholder if required"
-
-        if (!localPlaceHolder.isPlaceholder)
-        {
-            var relativePath = GetRelativePath(e.FullPath);
-            string fileIdString = relativePath;
-            if (localPlaceHolder.isDirectory) { fileIdString += "\\"; }
-            localPlaceHolder.ConvertToPlaceholder(fileIdString);
-        }
-        #endregion
-
-
-        Placeholder serverInfo;
         try
         {
-            serverInfo = await this.SyncContext.ServerProvider.GetFileInfo(GetRelativePath(e.FullPath), localPlaceHolder.isDirectory);
+            await ProcessChangedDataAsync(path, this.ChangedDataCancellationTokenSource.Token);
         }
         catch (Exception ex)
         {
-            serverInfo = null;
-            Debug.WriteLine(ex.Message);
-            localPlaceHolder.SetInSyncState(CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_NOT_IN_SYNC);
+            Styletronix.Debug.WriteLine("TODO: Exception Handling required: " + path + " " + ex.Message);
         }
+    }
 
+    private async Task ProcessChangedDataAsync(string fullPath, CancellationToken ctx)
+    {
+        // Ignore all Files in $Recycle.bin
+        if (fullPath.Contains(@"$Recycle.bin"))
+            return;
+
+        using ExtendedPlaceholderState localPlaceHolder = new(fullPath);
+
+        var relativePath = GetRelativePath(fullPath);
+        string fileIdString = relativePath;
+        if (localPlaceHolder.isDirectory) { fileIdString += "\\"; }
+
+
+        // Convert to placeholder if required
+        if (!localPlaceHolder.ConvertToPlaceholder(fileIdString)) { throw new Exception("Convert to Placeholder failed"); };
+
+        // Get ServerInfo
+        var getFileResult = await this.SyncContext.ServerProvider.GetFileInfo(GetRelativePath(fullPath), localPlaceHolder.isDirectory);
+
+        // Handle new local file or file on server deleted
+        if (getFileResult.Status == NtStatus.STATUS_NOT_A_CLOUD_FILE)
+        {
+            // File not found on Server.... New local file or File deleted on Server.
+            // Do not raise any exception and continue processing
+        }
+        else
+        {
+            getFileResult.ThrowOnFailure();
+        }
 
 
         if (localPlaceHolder.isDirectory)
         {
-            if (localPlaceHolder.PlaceholderInfoBasic.InSyncState == Windows.Win32.Storage.CloudFilters.CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_NOT_IN_SYNC)
+            if (getFileResult.Placeholder == null || getFileResult.Status == NtStatus.STATUS_NOT_A_CLOUD_FILE)
             {
-
+                // Directory does not exist on Server
+                if (localPlaceHolder.PlaceholderState.HasFlag(CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_IN_SYNC))
+                {
+                    // Directory remotely deleted if it was in sync.
+                    Styletronix.Debug.WriteLine("TODO: Remove local Directory if empty...");
+                    //Directory.Delete(localPlaceHolder.FullPath, false);
+                    return;
+                }
+                else
+                {
+                    // File locally created or modified while deleted on Server
+                    Styletronix.Debug.WriteLine("Create Directory on Server: " + relativePath);
+                    (await this.SyncContext.ServerProvider.CreateFileAsync(relativePath, true)).ThrowOnFailure(); ;
+                    return;
+                }
             }
         }
         else
         {
-            if (localPlaceHolder.LastWriteTime != serverInfo.LastWriteTime)
+            // New local file or remote deleted File
+            if (getFileResult.Placeholder == null || getFileResult.Status == NtStatus.STATUS_NOT_A_CLOUD_FILE)
             {
-                localPlaceHolder.SetInSyncState(CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_NOT_IN_SYNC);
-            }
-
-            if (localPlaceHolder.LastWriteTime < serverInfo.LastWriteTime)
-            {
-                Debug.WriteLine("TODO: FetchData if required");
-            }
-            else if (localPlaceHolder.LastWriteTime > serverInfo.LastWriteTime)
-            {
-                await UploadFileToServer(e.FullPath, ctx);
-            }
-            else
-            {
-                localPlaceHolder.SetInSyncState(CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_IN_SYNC);
-            }
-
-            if (localPlaceHolder.PlaceholderInfoBasic.PinState == Windows.Win32.Storage.CloudFilters.CF_PIN_STATE.CF_PIN_STATE_UNPINNED)
-            {
-                if (localPlaceHolder.LastWriteTime <= serverInfo.LastWriteTime)
+                // File does not exist on Server
+                if (localPlaceHolder.PlaceholderState.HasFlag(CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_IN_SYNC))
                 {
-                    localPlaceHolder.DehydratePlaceholder(true);
+                    // File remotely deleted if it was in sync.
+                    MoveToRecycleBin(localPlaceHolder);
+                    return;
                 }
-                else if (localPlaceHolder.LastWriteTime > serverInfo.LastWriteTime)
+                else
                 {
-                    await UploadFileToServer(e.FullPath, ctx);
+                    // File locally created or modified while deleted on Server
+                    var uploadFileToServerResult = await UploadFileToServer(fullPath, ctx);
+                    uploadFileToServerResult.ThrowOnFailure();
+                    return;
+                    //if (uploadFileToServerResult.Placeholder == null) { return; }
 
-                    if (ctx.IsCancellationRequested) { return; }
+                    //getFileResult.Placeholder = uploadFileToServerResult.Placeholder;
+                    //localPlaceHolder.Reload();
+                }
+            }
 
-                    // Refresh State
+            // Validate ETag
+            if (localPlaceHolder.ETag != getFileResult.Placeholder.ETag)
+            {
+                localPlaceHolder.SetInSyncState(CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_NOT_IN_SYNC).ThrowOnFailure();
+            }
+
+
+            // local file full populated and out of sync
+            if (localPlaceHolder.PlaceholderInfoBasic.InSyncState == CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_NOT_IN_SYNC &&
+                !localPlaceHolder.PlaceholderState.HasFlag(CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_PARTIAL))
+            {
+                // Local File changed: Upload to Server
+                if (localPlaceHolder.LastWriteTime > getFileResult.Placeholder.LastWriteTime)
+                {
+                    await UploadFileToServer(fullPath, ctx);
                     localPlaceHolder.Reload();
-                    if (localPlaceHolder.PlaceholderInfoBasic.InSyncState == Windows.Win32.Storage.CloudFilters.CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_IN_SYNC)
+                }
+                else
+                {
+                    // Local File requires update...
+                    if (localPlaceHolder.PlaceholderInfoBasic.PinState == CF_PIN_STATE.CF_PIN_STATE_PINNED)
                     {
-                        localPlaceHolder.DehydratePlaceholder(true);
+                        // TODO: Rehydrate local file
+
+                        localPlaceHolder.SetPinState(CF_PIN_STATE.CF_PIN_STATE_UNSPECIFIED);
+                        //localPlaceHolder.SetInSyncState(CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_NOT_IN_SYNC)
+
+                        localPlaceHolder.UpdatePlaceholder(getFileResult.Placeholder, fileIdString,
+                            CF_UPDATE_FLAGS.CF_UPDATE_FLAG_MARK_IN_SYNC | CF_UPDATE_FLAGS.CF_UPDATE_FLAG_DEHYDRATE);
+
+                        localPlaceHolder.SetPinState(CF_PIN_STATE.CF_PIN_STATE_PINNED);
+
+                        //localPlaceHolder.HydratePlaceholder().ThrowOnFailure();
+
+
+                        return;
+                    }
+                    else
+                    {
+                        //Backup local file, Dehydrate and update placeholder
+                        // TODO: Backup....
+                        localPlaceHolder.UpdatePlaceholder(getFileResult.Placeholder, fileIdString,
+                            CF_UPDATE_FLAGS.CF_UPDATE_FLAG_MARK_IN_SYNC | CF_UPDATE_FLAGS.CF_UPDATE_FLAG_DEHYDRATE).ThrowOnFailure();
+                        return;
                     }
                 }
             }
 
-            if (localPlaceHolder.PlaceholderInfoBasic.PinState == Windows.Win32.Storage.CloudFilters.CF_PIN_STATE.CF_PIN_STATE_PINNED && localPlaceHolder.PlaceholderState.HasFlag(Windows.Win32.Storage.CloudFilters.CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_PARTIAL))
+            // Dehydration requested
+            if (localPlaceHolder.PlaceholderInfoBasic.PinState == CF_PIN_STATE.CF_PIN_STATE_UNPINNED)
             {
-                localPlaceHolder.HydratePlaceholder(true);
+                if (localPlaceHolder.PlaceholderInfoBasic.InSyncState == CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_IN_SYNC)
+                {
+                    // Local file in Sync: Dehydrate
+                    localPlaceHolder.DehydratePlaceholder(false).ThrowOnFailure();
+                }
+                else
+                {
+                    if (localPlaceHolder.LastWriteTime <= getFileResult.Placeholder.LastWriteTime)
+                    {
+                        // Local file older: Dehydrate and update MetaData
+                        localPlaceHolder.UpdatePlaceholder(getFileResult.Placeholder, fileIdString,
+                            CF_UPDATE_FLAGS.CF_UPDATE_FLAG_DEHYDRATE |
+                            CF_UPDATE_FLAGS.CF_UPDATE_FLAG_MARK_IN_SYNC).ThrowOnFailure();
+                    }
+                    else
+                    {
+                        // Local file newer than Server: Upload, dehydrate, update MetaData
+                        if (!localPlaceHolder.PlaceholderState.HasFlag(CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_PARTIAL))
+                        {
+                            // Upload if local file is fully available
+                            await UploadFileToServer(fullPath, ctx);
+                            localPlaceHolder.Reload();
+                        }
+
+
+                        localPlaceHolder.UpdatePlaceholder(getFileResult.Placeholder, fileIdString,
+                             CF_UPDATE_FLAGS.CF_UPDATE_FLAG_VERIFY_IN_SYNC |
+                            CF_UPDATE_FLAGS.CF_UPDATE_FLAG_DEHYDRATE |
+                            CF_UPDATE_FLAGS.CF_UPDATE_FLAG_MARK_IN_SYNC).ThrowOnFailure();
+                    }
+                }
+
+                localPlaceHolder.SetPinState(CF_PIN_STATE.CF_PIN_STATE_UNSPECIFIED);
+                return;
+            }
+
+            // Hydration requested
+            if (localPlaceHolder.PlaceholderInfoBasic.PinState == CF_PIN_STATE.CF_PIN_STATE_PINNED && localPlaceHolder.PlaceholderState.HasFlag(CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_PARTIAL))
+            {
+                if (localPlaceHolder.PlaceholderInfoBasic.InSyncState == CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_IN_SYNC)
+                {
+                    // Local File in Sync: Hydrate....
+                    localPlaceHolder.HydratePlaceholder().ThrowOnFailure();
+                    return;
+                }
+                else
+                {
+                    // Local File not in Sync: Update placeholder, dehydrate, hydrate....
+                    localPlaceHolder.UpdatePlaceholder(getFileResult.Placeholder, fileIdString, CF_UPDATE_FLAGS.CF_UPDATE_FLAG_CLEAR_IN_SYNC).ThrowOnFailure();
+
+                    localPlaceHolder.HydratePlaceholder().ThrowOnFailure();
+                    return;
+                }
+            }
+
+            // local file not populated and out of sync
+            if (localPlaceHolder.PlaceholderInfoBasic.InSyncState == CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_NOT_IN_SYNC &&
+                localPlaceHolder.PlaceholderState.HasFlag(CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_PARTIAL))
+            {
+                // Dehydrate outdated placeholder
+                localPlaceHolder.UpdatePlaceholder(getFileResult.Placeholder, fileIdString,
+                    CF_UPDATE_FLAGS.CF_UPDATE_FLAG_DEHYDRATE | CF_UPDATE_FLAGS.CF_UPDATE_FLAG_MARK_IN_SYNC).ThrowOnFailure();
+
+                return;
+            }
+
+            //if (localPlaceHolder.PlaceholderInfoBasic.InSyncState == CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_NOT_IN_SYNC)
+            //{
+            //    if (localPlaceHolder.PlaceholderInfoBasic.PinState == CF_PIN_STATE.CF_PIN_STATE_PINNED)
+            //    {
+            //        if (localPlaceHolder.LastWriteTime > getFileResult.Placeholder.LastWriteTime)
+            //        {
+
+            //        }
+            //    }
+
+
+            //    if (localPlaceHolder.LastWriteTime < getFileResult.Placeholder.LastWriteTime)
+            //    {
+            //        // TODO: Backup local file if fully Hydrated. File was changed on Server and Client.
+            //        localPlaceHolder.UpdatePlaceholder(getFileResult.Placeholder, fileIdString, CF_UPDATE_FLAGS.CF_UPDATE_FLAG_DEHYDRATE | CF_UPDATE_FLAGS.CF_UPDATE_FLAG_MARK_IN_SYNC);
+            //    }
+            //    else if (localPlaceHolder.LastWriteTime > getFileResult.Placeholder.LastWriteTime)
+            //    {
+            //        // Local file is newer. Upload to Server
+            //        await UploadFileToServer(e.FullPath, ctx);
+            //        return;
+            //    }
+            //    else
+            //    {
+            //        localPlaceHolder.SetInSyncState(CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_IN_SYNC);
+            //    }
+            //}
+
+
+            //if (localPlaceHolder.PlaceholderInfoBasic.InSyncState == CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_IN_SYNC)
+            //{
+            //    if (localPlaceHolder.PlaceholderInfoBasic.PinState == CF_PIN_STATE.CF_PIN_STATE_UNPINNED)
+            //    {
+            //        if (localPlaceHolder.LastWriteTime <= getFileResult.Placeholder.LastWriteTime)
+            //        {
+            //            localPlaceHolder.DehydratePlaceholder(true);
+            //        }
+            //        else if (localPlaceHolder.LastWriteTime > getFileResult.Placeholder.LastWriteTime)
+            //        {
+            //            await UploadFileToServer(e.FullPath, ctx);
+
+            //            if (ctx.IsCancellationRequested) { return; }
+
+            //            // Refresh State
+            //            localPlaceHolder.Reload();
+            //            if (localPlaceHolder.PlaceholderInfoBasic.InSyncState == CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_IN_SYNC)
+            //            {
+            //                localPlaceHolder.DehydratePlaceholder(true);
+            //            }
+            //        }
+            //    }
+
+            //    if (localPlaceHolder.PlaceholderInfoBasic.PinState == CF_PIN_STATE.CF_PIN_STATE_PINNED && localPlaceHolder.PlaceholderState.HasFlag(CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_PARTIAL))
+            //    {
+            //        localPlaceHolder.HydratePlaceholder(true);
+            //    }
+            //}
+
+            if (!localPlaceHolder.PlaceholderState.HasFlag(CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_IN_SYNC))
+            {
+                Styletronix.Debug.WriteLine("Not in Sync after processing: " + fullPath);
             }
         }
     }
+    #endregion
 
-    private async Task UploadFileToServer(string fullPath, CancellationToken ctx)
+    private void MoveToRecycleBin(ExtendedPlaceholderState localPlaceHolder)
     {
-        Debug.WriteLine("Upload File: " + fullPath);
+        string recyclePath = this.SyncContext.LocalRootFolder + @"\$Recycle.bin\" + GetRelativePath(localPlaceHolder.FullPath);
+        string recycleDirectory = Path.GetDirectoryName(recyclePath);
+
+        //if (!Directory.Exists(recycleDirectory))
+        //{
+        //    Directory.CreateDirectory(recycleDirectory);
+        //    //var recyclePlaceholder = new ExtendedPlaceholderState(recycleDirectory);
+        //    //recyclePlaceholder.ConvertToPlaceholder(@"$Recycle.bin");
+        //    //recyclePlaceholder.SetPinState(CF_PIN_STATE.CF_PIN_STATE_EXCLUDED);
+        //    //recyclePlaceholder.SetInSyncState(CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_IN_SYNC);
+        //}
+
+
+        if (localPlaceHolder.isPlaceholder)
+        {
+            localPlaceHolder.SetPinState(CF_PIN_STATE.CF_PIN_STATE_EXCLUDED);
+            localPlaceHolder.SetInSyncState(CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_IN_SYNC);
+
+            if (localPlaceHolder.isDirectory)
+            {
+                // TODO: Delete Directory....
+            }
+            else
+            {
+                if (localPlaceHolder.PlaceholderState.HasFlag(CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_PARTIAL))
+                {
+                    File.Delete(localPlaceHolder.FullPath);
+                }
+                else
+                {
+                    localPlaceHolder.RevertPlaceholder(false).ThrowOnFailure();
+
+                    if (!Directory.Exists(recycleDirectory))
+                        Directory.CreateDirectory(recycleDirectory);
+
+                    File.Move(localPlaceHolder.FullPath, recyclePath);
+                }
+            }
+
+        }
+    }
+
+    private async Task<WriteFileCloseResult> UploadFileToServer(string fullPath, CancellationToken ctx)
+    {
+        Styletronix.Debug.WriteLine("Upload File: " + fullPath);
 
         var relativePath = GetRelativePath(fullPath);
 
-        using var wrf = this.SyncContext.ServerProvider.GetNewWriteFile();
-        using FileStream fStream = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+        var writeFileAsync = this.SyncContext.ServerProvider.GetNewWriteFile();
+        await using var ignored1 = writeFileAsync.ConfigureAwait(false);
+
+        using FileStream fStream = new(fullPath, FileMode.Open, FileAccess.ReadWrite, FileShare.Read);
 
         SetInSyncState(fStream.SafeFileHandle, CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_NOT_IN_SYNC);
 
-        Placeholder placeHolder = new(fullPath);
+        Placeholder localPlaceHolder = new(fullPath);
+
         long currentOffset = 0;
         var buffer = new byte[this.chunkSize];
 
         using var TransferKey = new SafeTransferKey(fStream.SafeFileHandle);
 
-        await wrf.OpenAsync(new OpenAsyncParams()
+        var openResult = await writeFileAsync.OpenAsync(new OpenAsyncParams()
         {
             RelativeFileName = relativePath,
-            FileInfo = placeHolder,
+            FileInfo = localPlaceHolder,
             CancellationToken = ctx,
-            mode = UploadMode.fullFile,
+            mode = UploadMode.FullFile,
             ETag = null // TODO: ETAG hinzufügen
         });
+        openResult.ThrowOnFailure();
 
         var readBytes = await fStream.ReadAsync(buffer, 0, this.chunkSize);
         while (readBytes > 0)
         {
-            SyncProviderUtils.ApplyTransferStateToFile(this.SyncContext.ConnectionKey, TransferKey, placeHolder.FileSize, currentOffset + readBytes);
+            ctx.ThrowIfCancellationRequested();
 
-            await wrf.WriteAsync(buffer, 0, currentOffset, readBytes);
+            SyncProviderUtils.ApplyTransferStateToFile(this.SyncContext.ConnectionKey, TransferKey, localPlaceHolder.FileSize, currentOffset + readBytes);
+
+            var writeResult = await writeFileAsync.WriteAsync(buffer, 0, currentOffset, readBytes);
+            writeResult.ThrowOnFailure();
+
             currentOffset += readBytes;
             readBytes = await fStream.ReadAsync(buffer, 0, this.chunkSize);
         };
 
-        var placeHolderNew = await wrf.CloseAsync(ctx.IsCancellationRequested == false);
+        var closeResult = await writeFileAsync.CloseAsync(ctx.IsCancellationRequested == false);
+        closeResult.ThrowOnFailure();
 
-        if (!ctx.IsCancellationRequested)
+        ctx.ThrowIfCancellationRequested();
+
+        // Update local LastWriteTime. Use Server Time to ensure consistent change time.
+        if (closeResult.Placeholder != null)
         {
-            if (placeHolderNew != null)
+            if (localPlaceHolder.LastWriteTime != closeResult.Placeholder.LastWriteTime)
             {
-                if (placeHolder.LastWriteTime != placeHolderNew.LastWriteTime)
-                {
-                    File.SetLastWriteTime(fullPath, placeHolderNew.LastWriteTime);
-                }
+                Windows.Win32.PInvoke.SetFileTime(fStream.SafeFileHandle, null, null, closeResult.Placeholder.LastWriteTime.ToFileTimeStruct());
             }
-            SetInSyncState(fStream.SafeFileHandle, CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_IN_SYNC);
         }
 
-        Debug.WriteLine("Upload File Completed: " + fullPath);
+        SetInSyncState(fStream.SafeFileHandle, CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_IN_SYNC);
+        fStream.Close();
+
+        Styletronix.Debug.WriteLine("Upload File Completed: " + fullPath);
+
+        return closeResult;
     }
 
     public enum SyncMode
@@ -1158,66 +1182,64 @@ public class SyncProvider : IDisposable
         Local,
         Full
     }
-    private void FindLocalChangedDataRecursive(string folder, CancellationToken ctx, SyncMode syncMode)
+    private async Task FindLocalChangedDataRecursive(string folder, CancellationToken ctx, SyncMode syncMode)
     {
         bool fileFound;
 
-        using (var findHandle = Kernel32.FindFirstFile(@"\\?\" + folder + @"\*", out WIN32_FIND_DATA findData))
+        if (folder.Contains(@"$Recycle.bin"))
+            return;
+
+        Styletronix.Debug.WriteLine("FindLocalChangedData: " + folder);
+
+
+        using var findHandle = Kernel32.FindFirstFile(@"\\?\" + folder + @"\*", out WIN32_FIND_DATA findData);
+        fileFound = (findHandle.IsInvalid == false);
+
+        while (fileFound)
         {
-            fileFound = (findHandle.IsInvalid == false);
-
-            while (fileFound)
+            if (findData.cFileName != "." && findData.cFileName != ".." && findData.cFileName != @"$Recycle.bin")
             {
-                if (findData.cFileName != "." && findData.cFileName != "..")
+                using ExtendedPlaceholderState localPlaceholder = new(findData, folder);
+
+                if (localPlaceholder.isDirectory)
                 {
-                    using ExtendedPlaceholderState localPlaceholder = new(findData, folder);
-
-                    if (localPlaceholder.isDirectory)
+                    if (!localPlaceholder.isPlaceholder)
                     {
-                        #region "Convert to Placeholder if required"
-                        if (!localPlaceholder.isPlaceholder)
-                        {
-                            var relativePath = GetRelativePath(folder + "\\" + findData.cFileName);
-                            string fileIdString = relativePath;
-                            if (localPlaceholder.isDirectory) { fileIdString += "\\"; }
+                        await this.ChangedDataQueueBlock.SendAsync(folder + "\\" + findData.cFileName);
+                        await FindLocalChangedDataRecursive(folder + "\\" + findData.cFileName, ctx, syncMode);
+                    }
+                    else if (!localPlaceholder.PlaceholderState.HasFlag(CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_PARTIAL) && localPlaceholder.PlaceholderState.HasFlag(CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_IN_SYNC))
+                    {
+                        await FindLocalChangedDataRecursive(folder + "\\" + findData.cFileName, ctx, syncMode);
+                    }
 
-                            localPlaceholder.ConvertToPlaceholder(fileIdString);
-                        }
-                        #endregion
-
-                        if (!localPlaceholder.PlaceholderState.HasFlag(Windows.Win32.Storage.CloudFilters.CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_PARTIAL))
-                        {
-                            // var b = state.PlaceholderInfoBasic;
-                            // Traverse subdirectory
-                            FindLocalChangedDataRecursive(folder + "\\" + findData.cFileName, ctx, syncMode);
-                        }
-
+                }
+                else
+                {
+                    if (syncMode.HasFlag(SyncMode.Full))
+                    {
+                        await this.ChangedDataQueueBlock.SendAsync(folder + "\\" + findData.cFileName);
                     }
                     else
                     {
-                        if (syncMode.HasFlag(SyncMode.Full))
+                        if (!localPlaceholder.PlaceholderState.HasFlag(CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_IN_SYNC))
                         {
-                            this.filesToCheck.TryAdd(folder + "\\" + findData.cFileName, null);
-                            this.ChangedDataQueue.Add(new FileSystemEventArgs(WatcherChangeTypes.All, folder, findData.cFileName));
-                        }
-                        else
-                        {
-                            if (!localPlaceholder.PlaceholderState.HasFlag(Windows.Win32.Storage.CloudFilters.CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_IN_SYNC))
-                            {
-                                this.filesToCheck.TryAdd(folder + "\\" + findData.cFileName, null);
-                                this.ChangedDataQueue.Add(new FileSystemEventArgs(WatcherChangeTypes.All, folder, findData.cFileName));
-                            }
+                            await this.ChangedDataQueueBlock.SendAsync(folder + "\\" + findData.cFileName);
                         }
                     }
                 }
-
-                if (ctx.IsCancellationRequested) { return; }
-                fileFound = Kernel32.FindNextFile(findHandle, out findData);
             }
+
+            if (ctx.IsCancellationRequested) { return; }
+            fileFound = Kernel32.FindNextFile(findHandle, out findData);
+        }
+
+        if (syncMode == SyncMode.Full)
+        {
+            var pl = new ExtendedPlaceholderState(folder);
+            pl.EnableOnDemandPopulation(GetRelativePath(folder) + "\\");
         }
     }
-
-
 
 
 
@@ -1233,11 +1255,11 @@ public class SyncProvider : IDisposable
 
     private Task FetchDataWorker()
     {
-        return Task.Run(() =>
+        return Task.Factory.StartNew(async () =>
         {
             while (!this.fileFetchHelper.CancellationToken.IsCancellationRequested)
             {
-                var item = this.fileFetchHelper.WaitTakeNext();
+                var item = await this.fileFetchHelper.WaitTakeNextAsync();
                 if (this.fileFetchHelper.CancellationToken.IsCancellationRequested) { break; }
                 if (item != null)
                 {
@@ -1247,297 +1269,243 @@ public class SyncProvider : IDisposable
                     }
                     catch (Exception ex)
                     {
-                        Debug.WriteLine(ex.ToString());
+                        Styletronix.Debug.WriteLine(ex.ToString());
                     }
                 }
             }
-        }, this.fileFetchHelper.CancellationToken);
+        }, this.fileFetchHelper.CancellationToken, TaskCreationOptions.LongRunning |
+        TaskCreationOptions.RunContinuationsAsynchronously, TaskScheduler.Default);
     }
-    //private async Task FetchDataAsync(SyncProviderUtils.DataActions data)
-    //{
-    //    var ctx = data.CancellationTokenSource.Token;
-    //    if (ctx.IsCancellationRequested) { return; }
 
-    //    string relativePath = data.NormalizedPath.Remove(0, this.SyncContext.LocalRootFolderNormalized.Length).TrimStart(char.Parse("\\"));
-    //    string targetFullPath = Path.Combine(this.SyncContext.LocalRootFolder, relativePath);
-
-    //    Debug.WriteLine("Fetch Data " + data.FileOffset + @" - " + data.Length + @" / " + relativePath);
-
-
-    //    using (iReadFileAsync fetchFile = SyncContext.ServerProvider.GetNewReadFile())
-    //    {
-    //        long Offset = data.FileOffset;
-    //        long Length = data.Length;
-    //        bool exitLoop = false;
-    //        byte[] stackBuffer = new byte[stackSize];
-    //        Task<int> fetchTask;
-
-
-    //        //var rangeList = this.fileFetchHelper.TakeNextRange(data.NormalizedPath, Offset + Length, this.chunkSize);
-    //        //if (rangeList.Count > 0)
-    //        //{
-    //        //    long rangeLength = rangeList.Max(a => (a.FileOffset + a.Length));
-    //        //    Length = Math.Max(rangeLength, Length);
-    //        //}
-
-
-    //        var openAsyncResult = await fetchFile.OpenAsync(new OpenAsyncParams()
-    //        {
-    //            RelativeFileName = relativePath,
-    //            CancellationToken = ctx,
-    //            ETag = null // TODO: ETAG ausfüllen
-    //        });
-    //        byte[] buffer = new byte[this.chunkSize];
-    //        byte[] buffer1 = new byte[this.chunkSize];
-
-    //        while (!exitLoop)
-    //        {
-    //            int requiredBuffer = (int)Math.Min(this.chunkSize, Length);
-    //            //byte[] buffer = new byte[requiredBuffer];
-    //            //byte[] buffer1 = new byte[requiredBuffer];
-
-    //            var realOffset = Offset;
-    //            long readTotal = 0;
-    //            int readLength = (int)Math.Min(Length - readTotal, (long)this.chunkSize);
-
-    //            fetchTask = fetchFile.ReadAsync(buffer1, 0, realOffset, readLength);
-
-    //            // if (Debugger.IsAttached) { System.Threading.Thread.Sleep(200); } // Testdelay TODO: Remove for production
-
-    //            while (readLength > 0 && ctx.IsCancellationRequested == false)
-    //            {
-    //                //Length = data.Length;
-
-    //                long mBufferOffset = Offset + readTotal;
-
-    //                int mBufferLength = await fetchTask;
-    //                buffer1.CopyTo(buffer, 0);
-
-    //                realOffset += mBufferLength;
-    //                readTotal += mBufferLength;
-    //                readLength = (int)Math.Min(Length - readTotal, (long)this.chunkSize);
-
-    //                if (readLength > 0)
-    //                {
-    //                    fetchTask = fetchFile.ReadAsync(buffer1, 0, realOffset, readLength);
-    //                }
-
-    //                SyncProviderUtils.ApplyTransferStateToFile(this.SyncContext.ConnectionKey, data.TransferKey, Length, readTotal);
-
-    //                unsafe
-    //                {
-    //                    fixed (byte* StackBuffer = stackBuffer)
-    //                    {
-    //                        int stackTransfered = 0;
-    //                        while (stackTransfered < mBufferLength)
-    //                        {
-    //                            if (ctx.IsCancellationRequested) { return; }
-
-    //                            int realStackSize = Math.Min(stackSize, mBufferLength - stackTransfered);
-
-    //                            Marshal.Copy(buffer, stackTransfered, (IntPtr)StackBuffer, realStackSize);
-
-    //                            var opInfo = new CldApi.CF_OPERATION_INFO()
-    //                            {
-    //                                Type = CldApi.CF_OPERATION_TYPE.CF_OPERATION_TYPE_TRANSFER_DATA,
-    //                                ConnectionKey = this.SyncContext.ConnectionKey,
-    //                                TransferKey = data.TransferKey,
-    //                                RequestKey = data.RequestKey
-    //                            };
-    //                            opInfo.StructSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf(opInfo);
-
-    //                            var TpParam = new CldApi.CF_OPERATION_PARAMETERS.TRANSFERDATA
-    //                            {
-    //                                Length = realStackSize,
-    //                                Offset = mBufferOffset + stackTransfered,
-    //                                Buffer = (IntPtr)StackBuffer,
-    //                                Flags = CldApi.CF_OPERATION_TRANSFER_DATA_FLAGS.CF_OPERATION_TRANSFER_DATA_FLAG_NONE
-    //                            };
-    //                            var opParams = CldApi.CF_OPERATION_PARAMETERS.Create(TpParam);
-
-    //                            var ret = CldApi.CfExecute(opInfo, ref opParams);
-    //                            if (ret.Succeeded == false)
-    //                            {
-    //                                Debug.WriteLine(ret.ToString());
-    //                                return;
-    //                            }
-    //                            //ret.ThrowIfFailed();
-
-    //                            stackTransfered += realStackSize;
-    //                        }
-    //                    }
-    //                }
-    //            }
-
-
-    //            var nextItem = this.fileFetchHelper.TakeNext(data.NormalizedPath, Offset);
-    //            while (nextItem != null)
-    //            {
-    //                if ((nextItem.FileOffset + nextItem.Length) > (Offset + Length))
-    //                {
-    //                    break;
-    //                }
-    //                nextItem = this.fileFetchHelper.TakeNext(data.NormalizedPath, Offset);
-    //            }
-    //            if (nextItem != null)
-    //            {
-    //                ctx = nextItem.CancellationTokenSource.Token;
-    //                Offset = Math.Max((Offset + Length), nextItem.FileOffset);
-    //                Length = nextItem.FileOffset + nextItem.Length - realOffset;
-    //                Debug.WriteLine("  FETCH_DATA Next Block " + Offset);
-    //            }
-    //            else
-    //            {
-    //                exitLoop = true;
-    //            }
-
-
-    //            //rangeList = this.fileFetchHelper.TakeNextRange(data.NormalizedPath, Offset + Length, this.chunkSize);
-    //            //if (rangeList.Count > 0)
-    //            //{
-    //            //    Length = rangeList.Max(a => (a.FileOffset + a.Length));
-    //            //}
-    //            //else
-    //            //{
-    //            //    exitLoop = true;
-    //            //}
-    //        }
-
-    //        await fetchFile.CloseAsync();
-    //    }
-
-
-    //    if (ctx.IsCancellationRequested)
-    //    {
-    //        Debug.WriteLine("  FETCH_DATA CANCELED");
-    //    }
-    //    else
-    //    {
-    //        Debug.WriteLine("  FETCH_DATA Completed");
-    //    }
-
-    //}
 
     private async Task FetchDataAsync(SyncProviderUtils.FetchRange data)
     {
-        var ctx = new CancellationTokenSource().Token; // data.CancellationTokenSource.Token;
-        if (ctx.IsCancellationRequested) { return; }
-
         string relativePath = data.NormalizedPath.Remove(0, this.SyncContext.LocalRootFolderNormalized.Length).TrimStart(char.Parse("\\"));
         string targetFullPath = Path.Combine(this.SyncContext.LocalRootFolder, relativePath);
 
-        Debug.WriteLine("Fetch DataRange " + data.RangeStart + @" - " + data.RangeEnd + @" / " + relativePath);
+        NTStatus CompletionStatus = NTStatus.STATUS_SUCCESS;
 
+        Styletronix.Debug.WriteLine("Fetch DataRange " + data.RangeStart + @" - " + data.RangeEnd + @" / " + relativePath);
 
-        using (iReadFileAsync fetchFile = SyncContext.ServerProvider.GetNewReadFile())
+        try
         {
-            byte[] stackBuffer = new byte[stackSize];
+            var ctx = new CancellationTokenSource().Token; // data.CancellationTokenSource.Token;
+            if (ctx.IsCancellationRequested) { return; }
 
-            var openAsyncResult = await fetchFile.OpenAsync(new OpenAsyncParams()
+            var opInfo = new CF_OPERATION_INFO()
             {
-                RelativeFileName = relativePath,
-                CancellationToken = ctx,
-                ETag = null // TODO: ETAG ausfüllen
-            });
+                Type = CF_OPERATION_TYPE.CF_OPERATION_TYPE_TRANSFER_DATA,
+                ConnectionKey = this.SyncContext.ConnectionKey,
+                TransferKey = data.TransferKey,
+                RequestKey = new CF_REQUEST_KEY()
+            };
+            opInfo.StructSize = (uint)Marshal.SizeOf(opInfo);
 
-            byte[] buffer = new byte[this.chunkSize];
-
-            while (data != null)
+            if (relativePath.Contains(@"$Recycle.bin"))
             {
-                var currentRangeStart = data.RangeStart;
-                var currentRangeEnd = data.RangeEnd;
-
-                var currentOffset = currentRangeStart;
-                var totalLength = currentRangeEnd - currentRangeStart;
-
-                int readLength = (int)Math.Min(currentRangeEnd - currentOffset, (long)this.chunkSize);
-
-                if (readLength > 0 && ctx.IsCancellationRequested == false)
+                var TpParam = new CF_OPERATION_PARAMETERS.TRANSFERDATA
                 {
-                    int dataRead = await fetchFile.ReadAsync(buffer, 0, currentOffset, readLength);
-
-                    if (data.RangeEnd == 0 || data.RangeEnd < currentOffset || data.RangeStart > currentOffset) { continue; }
-
-                    SyncProviderUtils.ApplyTransferStateToFile(this.SyncContext.ConnectionKey, data.TransferKey, totalLength, currentOffset + dataRead);
-
-                    unsafe
-                    {
-                        fixed (byte* StackBuffer = stackBuffer)
-                        {
-                            int stackTransfered = 0;
-                            while (stackTransfered < dataRead)
-                            {
-                                if (ctx.IsCancellationRequested) { return; }
-
-                                int realStackSize = Math.Min(stackSize, dataRead - stackTransfered);
-
-                                Marshal.Copy(buffer, stackTransfered, (IntPtr)StackBuffer, realStackSize);
-
-                                var opInfo = new CldApi.CF_OPERATION_INFO()
-                                {
-                                    Type = CldApi.CF_OPERATION_TYPE.CF_OPERATION_TYPE_TRANSFER_DATA,
-                                    ConnectionKey = this.SyncContext.ConnectionKey,
-                                    TransferKey = data.TransferKey,
-                                    RequestKey = new CldApi.CF_REQUEST_KEY()
-                                };
-                                opInfo.StructSize = (uint)Marshal.SizeOf(opInfo);
-
-                                var TpParam = new CldApi.CF_OPERATION_PARAMETERS.TRANSFERDATA
-                                {
-                                    Length = realStackSize,
-                                    Offset = currentOffset + stackTransfered,
-                                    Buffer = (IntPtr)StackBuffer,
-                                    Flags = CldApi.CF_OPERATION_TRANSFER_DATA_FLAGS.CF_OPERATION_TRANSFER_DATA_FLAG_NONE
-                                };
-                                var opParams = CldApi.CF_OPERATION_PARAMETERS.Create(TpParam);
-
-                                var ret = CldApi.CfExecute(opInfo, ref opParams);
-                                if (ret.Succeeded == false)
-                                {
-                                    //380 -> ungültig
-                                    //398 -> cancel
-                                    Debug.WriteLine(ret.ToString());
-                                    //return;
-                                }
-                                //ret.ThrowIfFailed();
-
-                                stackTransfered += realStackSize;
-                            }
-                        }
-                    }
-
-                    this.fileFetchHelper.RemoveRange(data.NormalizedPath, currentRangeStart, currentRangeStart + dataRead);
-                }
-
-                data = this.fileFetchHelper.TakeNext(data.NormalizedPath);
+                    Length = 1, // Length has to be greater than 0 even if transfer failed....
+                    Offset = data.RangeStart,
+                    Buffer = IntPtr.Zero,
+                    Flags = CF_OPERATION_TRANSFER_DATA_FLAGS.CF_OPERATION_TRANSFER_DATA_FLAG_NONE,
+                    CompletionStatus = new NTStatus((uint)NtStatus.STATUS_NOT_A_CLOUD_FILE)
+                };
+                var opParams = CF_OPERATION_PARAMETERS.Create(TpParam);
+                Styletronix.Debug.LogResponse(CfExecute(opInfo, ref opParams));
+                this.fileFetchHelper.Cancel(data.NormalizedPath);
+                return;
             }
 
-            await fetchFile.CloseAsync();
+            using (IReadFileAsync fetchFile = SyncContext.ServerProvider.GetNewReadFile())
+            {
+                var openAsyncResult = await fetchFile.OpenAsync(new OpenAsyncParams()
+                {
+                    RelativeFileName = relativePath,
+                    CancellationToken = ctx,
+                    ETag = null // TODO: ETAG ausfüllen:  ETag = "_" + File.GetLastWriteTimeUtc(fullPath).Ticks + "_" + this.fileStream.Length
+                });
 
-            //SyncProviderUtils.ApplyTransferStateToFile(this.SyncContext.ConnectionKey, data.TransferKey, 0, 0);
+                CompletionStatus = new NTStatus((uint)openAsyncResult.Status);
+                using ExtendedPlaceholderState localPlaceholder = new(targetFullPath);
+
+                #region "Compare ETag to verify Sync of cloud and local file"
+                if (CompletionStatus == NTStatus.STATUS_SUCCESS)
+                {
+                    if (openAsyncResult.Placeholder?.ETag != localPlaceholder.ETag)
+                    {
+                        Styletronix.Debug.WriteLine("ETag Validation FAILED: " + relativePath);
+                        CompletionStatus = new NTStatus((uint)Styletronix.CloudFilterApi.NtStatus.STATUS_CLOUD_FILE_NOT_IN_SYNC);
+                        openAsyncResult.Message = Styletronix.CloudFilterApi.NtStatus.STATUS_CLOUD_FILE_NOT_IN_SYNC.ToString();
+                    }
+                }
+                #endregion
+
+                #region "TODO:  Rehydrate. Current implementation does not work"
+                //TODO:  Rehydrate. Current implementation does not work
+                //if (CompletionStatus == (uint)Styletronix.CloudFilterApi.NtStatus.STATUS_CLOUD_FILE_NOT_IN_SYNC)
+                //{                 
+                //    using SafeHandlers.SafeAllocCoTaskMem fileIdPtr = new(relativePath);
+                //    using SafeHandlers.SafeAllocCoTaskMem metaPtr = new(Styletronix.CloudFilterApi.CreateFSMetaData(openAsyncResult.Placeholder));
+
+                //    var opInfo2 = new CF_OPERATION_INFO()
+                //    {
+                //        Type = CF_OPERATION_TYPE.CF_OPERATION_TYPE_RESTART_HYDRATION,
+                //        ConnectionKey = this.SyncContext.ConnectionKey,
+                //        TransferKey = data.TransferKey,
+                //        RequestKey = new CF_REQUEST_KEY()
+                //    };
+                //    opInfo2.StructSize = (uint)Marshal.SizeOf(opInfo2);
+                //    var TpParam = new CF_OPERATION_PARAMETERS.RESTARTHYDRATION
+                //    {
+                //        FileIdentity = fileIdPtr,
+                //        FileIdentityLength = (uint)fileIdPtr.Size,
+                //        Flags = CF_OPERATION_RESTART_HYDRATION_FLAGS.CF_OPERATION_RESTART_HYDRATION_FLAG_MARK_IN_SYNC,
+                //        FsMetadata = metaPtr
+                //    };
+                //    var opParams = CF_OPERATION_PARAMETERS.Create(TpParam);
+                //    HRESULT result = CfExecute(opInfo2, ref opParams);
+                //    if (result.Succeeded) { CompletionStatus = NTStatus.STATUS_SUCCESS; }
+                //}
+                #endregion
+
+                if (CompletionStatus != NTStatus.STATUS_SUCCESS)
+                {
+                    Styletronix.Debug.WriteLine("Error: " + openAsyncResult.Message);
+
+                    var TpParam = new CF_OPERATION_PARAMETERS.TRANSFERDATA
+                    {
+                        Length = 1, // Length has to be greater than 0 even if transfer failed....
+                        Offset = data.RangeStart,
+                        Buffer = IntPtr.Zero,
+                        Flags = CF_OPERATION_TRANSFER_DATA_FLAGS.CF_OPERATION_TRANSFER_DATA_FLAG_NONE,
+                        CompletionStatus = CompletionStatus
+                    };
+                    var opParams = CF_OPERATION_PARAMETERS.Create(TpParam);
+                    Styletronix.Debug.LogResponse(CfExecute(opInfo, ref opParams));
+
+
+                    this.fileFetchHelper.Cancel(data.NormalizedPath);
+
+                    localPlaceholder.SetInSyncState(CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_NOT_IN_SYNC);
+                    return;
+                }
+
+                byte[] stackBuffer = new byte[stackSize];
+                byte[] buffer = new byte[this.chunkSize];
+
+                while (data != null)
+                {
+                    var currentRangeStart = data.RangeStart;
+                    var currentRangeEnd = data.RangeEnd;
+
+                    var currentOffset = currentRangeStart;
+                    var totalLength = currentRangeEnd - currentRangeStart;
+
+                    int readLength = (int)Math.Min(currentRangeEnd - currentOffset, (long)this.chunkSize);
+
+                    if (readLength > 0 && ctx.IsCancellationRequested == false)
+                    {
+                        var readResult = await fetchFile.ReadAsync(buffer, 0, currentOffset, readLength);
+                        if (!readResult.Succeeded)
+                        {
+                            Styletronix.Debug.WriteLine("Error: " + readResult.Message);
+
+                            var opParams = CF_OPERATION_PARAMETERS.Create(new CF_OPERATION_PARAMETERS.TRANSFERDATA
+                            {
+                                Length = 1, // Length has to be greater than 0 even if transfer failed....
+                                Offset = data.RangeStart,
+                                Buffer = IntPtr.Zero,
+                                Flags = CF_OPERATION_TRANSFER_DATA_FLAGS.CF_OPERATION_TRANSFER_DATA_FLAG_NONE,
+                                CompletionStatus = new NTStatus((uint)readResult.Status)
+                            });
+                            Styletronix.Debug.LogResponse(CfExecute(opInfo, ref opParams));
+
+
+                            this.fileFetchHelper.Cancel(data.NormalizedPath);
+                            return;
+                        }
+                        int dataRead = readResult.BytesRead;
+
+                        if (data.RangeEnd == 0 || data.RangeEnd < currentOffset || data.RangeStart > currentOffset) { continue; }
+
+                        SyncProviderUtils.ApplyTransferStateToFile(this.SyncContext.ConnectionKey, data.TransferKey, totalLength, currentOffset + dataRead);
+
+                        if (dataRead < readLength && CompletionStatus == NTStatus.STATUS_SUCCESS)
+                        {
+                            CompletionStatus = NTStatus.STATUS_END_OF_FILE;
+                        }
+
+                        unsafe
+                        {
+                            fixed (byte* StackBuffer = stackBuffer)
+                            {
+                                int stackTransfered = 0;
+                                while (stackTransfered < dataRead)
+                                {
+                                    if (ctx.IsCancellationRequested) { return; }
+
+                                    int realStackSize = Math.Min(stackSize, dataRead - stackTransfered);
+
+                                    Marshal.Copy(buffer, stackTransfered, (IntPtr)StackBuffer, realStackSize);
+
+                                    var TpParam = new CF_OPERATION_PARAMETERS.TRANSFERDATA
+                                    {
+                                        Length = realStackSize,
+                                        Offset = currentOffset + stackTransfered,
+                                        Buffer = (IntPtr)StackBuffer,
+                                        Flags = CF_OPERATION_TRANSFER_DATA_FLAGS.CF_OPERATION_TRANSFER_DATA_FLAG_NONE,
+                                        CompletionStatus = CompletionStatus
+                                    };
+                                    var opParams = CF_OPERATION_PARAMETERS.Create(TpParam);
+
+                                    var ret = CfExecute(opInfo, ref opParams);
+                                    if (ret.Succeeded == false)
+                                    {
+                                        Styletronix.Debug.WriteLine(ret.ToString());
+                                    }
+                                    //ret.ThrowIfFailed();
+
+                                    stackTransfered += realStackSize;
+                                }
+                            }
+                        }
+
+                        this.fileFetchHelper.RemoveRange(data.NormalizedPath, currentRangeStart, currentRangeStart + dataRead);
+                    }
+
+                    data = this.fileFetchHelper.TakeNext(data.NormalizedPath);
+                }
+
+                await fetchFile.CloseAsync();
+            }
+
+
+            if (ctx.IsCancellationRequested)
+            {
+                Styletronix.Debug.WriteLine("  FETCH_DATA CANCELED");
+            }
+            else
+            {
+                Styletronix.Debug.WriteLine("  FETCH_DATA Completed");
+            }
         }
-
-
-        if (ctx.IsCancellationRequested)
+        catch (Exception ex)
         {
-            Debug.WriteLine("  FETCH_DATA CANCELED");
+            Styletronix.Debug.WriteLine("FETCH_DATA FAILED " + ex.ToString());
+            this.fileFetchHelper.Cancel(data.NormalizedPath);
         }
-        else
-        {
-            Debug.WriteLine("  FETCH_DATA Completed");
-        }
-
     }
 
 
     #region "Callback"
-    public void FETCH_PLACEHOLDERS(in CldApi.CF_CALLBACK_INFO CallbackInfo, in CldApi.CF_CALLBACK_PARAMETERS CallbackParameters)
+    public void FETCH_PLACEHOLDERS(in CF_CALLBACK_INFO CallbackInfo, in CF_CALLBACK_PARAMETERS CallbackParameters)
     {
-        Debug.WriteLine("FETCH_PLACEHOLDERS");
-        Debug.WriteLine(CallbackInfo.NormalizedPath);
-        Debug.WriteLine("Priority: " + CallbackInfo.PriorityHint);
+        Styletronix.Debug.WriteLine("FETCH_PLACEHOLDERS");
+        Styletronix.Debug.WriteLine(CallbackInfo.NormalizedPath);
+        Styletronix.Debug.WriteLine("Priority: " + CallbackInfo.PriorityHint);
 
-        CldApi.CF_OPERATION_INFO opInfo = CreateOPERATION_INFO(CallbackInfo, CldApi.CF_OPERATION_TYPE.CF_OPERATION_TYPE_TRANSFER_PLACEHOLDERS);
+        CF_OPERATION_INFO opInfo = CreateOPERATION_INFO(CallbackInfo, CF_OPERATION_TYPE.CF_OPERATION_TYPE_TRANSFER_PLACEHOLDERS);
         var ctx = new CancellationTokenSource();
 
 
@@ -1545,13 +1513,14 @@ public class SyncProvider : IDisposable
 
         FETCH_PLACEHOLDERS_Internal(GetRelativePath(CallbackInfo), opInfo, CallbackParameters.FetchPlaceholders.Pattern, ctx.Token);
     }
-    public async void FETCH_PLACEHOLDERS_Internal(string relativePath, CldApi.CF_OPERATION_INFO opInfo, string Pattern, CancellationToken cancellationToken)
+    public async void FETCH_PLACEHOLDERS_Internal(string relativePath, CF_OPERATION_INFO opInfo, string Pattern, CancellationToken cancellationToken)
     {
         SetInSyncState(this.SyncContext.LocalRootFolder + "\\" + relativePath, CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_NOT_IN_SYNC, true);
 
         using SafePlaceHolderList infos = new SafePlaceHolderList();
+        List<Placeholder> placeholders = new List<Placeholder>();
 
-        using (iFileListAsync fileList = SyncContext.ServerProvider.GetNewFileList())
+        using (IFileListAsync fileList = SyncContext.ServerProvider.GetNewFileList())
         {
             await fileList.OpenAsync(relativePath, cancellationToken);
 
@@ -1560,7 +1529,8 @@ public class SyncProvider : IDisposable
                 string fileIdString = relativePath + "\\" + fileList.Current.RelativeFileName;
                 if (fileList.Current.FileAttributes.HasFlag(FileAttributes.Directory)) { fileIdString += "\\"; }
 
-                infos.Add(CreatePlaceholder(fileList.Current, fileIdString));
+                placeholders.Add(fileList.Current);
+                infos.Add(Styletronix.CloudFilterApi.CreatePlaceholderInfo(fileList.Current, fileIdString));
 
                 if (cancellationToken.IsCancellationRequested)
                     break;
@@ -1574,24 +1544,48 @@ public class SyncProvider : IDisposable
 
         uint total = (uint)infos.Count;
 
-        CldApi.CF_OPERATION_PARAMETERS.TRANSFERPLACEHOLDERS TpParam = new CldApi.CF_OPERATION_PARAMETERS.TRANSFERPLACEHOLDERS
+        CF_OPERATION_PARAMETERS.TRANSFERPLACEHOLDERS TpParam = new CF_OPERATION_PARAMETERS.TRANSFERPLACEHOLDERS
         {
             PlaceholderArray = infos,
-            Flags = CldApi.CF_OPERATION_TRANSFER_PLACEHOLDERS_FLAGS.CF_OPERATION_TRANSFER_PLACEHOLDERS_FLAG_DISABLE_ON_DEMAND_POPULATION,
+            Flags = CF_OPERATION_TRANSFER_PLACEHOLDERS_FLAGS.CF_OPERATION_TRANSFER_PLACEHOLDERS_FLAG_DISABLE_ON_DEMAND_POPULATION,
             PlaceholderCount = total,
             PlaceholderTotalCount = total,
             CompletionStatus = NTStatus.STATUS_SUCCESS
         };
 
-        CldApi.CF_OPERATION_PARAMETERS opParams = CldApi.CF_OPERATION_PARAMETERS.Create(TpParam);
+        CF_OPERATION_PARAMETERS opParams = CF_OPERATION_PARAMETERS.Create(TpParam);
 
-        HRESULT ret = CldApi.CfExecute(opInfo, ref opParams);
+        HRESULT ret = CfExecute(opInfo, ref opParams);
 
+
+        // Validate local Placeholders. CfExecute only adds missing entries, but does not check existing data.
+        foreach (var item in placeholders)
+        {
+            try
+            {
+                if (item.ETag != new Placeholder(this.SyncContext.LocalRootFolder + "\\" + item.RelativeFileName).ETag)
+                {
+                    await ChangedDataQueueBlock.SendAsync(this.SyncContext.LocalRootFolder + "\\" + item.RelativeFileName);
+                }
+            }
+            catch (Exception ex)
+            {
+                Styletronix.Debug.WriteLine(ex.ToString());
+            }
+        }
+
+        foreach (var item in Directory.GetFileSystemEntries(this.SyncContext.LocalRootFolder + "\\" + relativePath))
+        {
+            if (!(from a in placeholders where a.RelativeFileName.Equals(GetRelativePath(item), StringComparison.CurrentCultureIgnoreCase) select a).Any())
+            {
+                await ChangedDataQueueBlock.SendAsync(item);
+            }
+        }
 
         SetInSyncState(this.SyncContext.LocalRootFolder + "\\" + relativePath, CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_IN_SYNC, true);
     }
 
-    private class SafePlaceHolderList : Vanara.InteropServices.SafeNativeArray<CldApi.CF_PLACEHOLDER_CREATE_INFO>
+    private class SafePlaceHolderList : Vanara.InteropServices.SafeNativeArray<CF_PLACEHOLDER_CREATE_INFO>
     {
         protected override void Dispose(bool disposing)
         {
@@ -1608,20 +1602,20 @@ public class SyncProvider : IDisposable
         }
     }
 
-    public void CANCEL_FETCH_PLACEHOLDERS(in CldApi.CF_CALLBACK_INFO CallbackInfo, in CldApi.CF_CALLBACK_PARAMETERS CallbackParameters)
+    public void CANCEL_FETCH_PLACEHOLDERS(in CF_CALLBACK_INFO CallbackInfo, in CF_CALLBACK_PARAMETERS CallbackParameters)
     {
-        Debug.WriteLine("CANCEL_FETCH_PLACEHOLDERS " + CallbackInfo.NormalizedPath);
+        Styletronix.Debug.WriteLine("CANCEL_FETCH_PLACEHOLDERS " + CallbackInfo.NormalizedPath);
 
         if (FetchPlaceholdersCancellationTokens.TryRemove(CallbackInfo.NormalizedPath, out CancellationTokenSource ctx))
         {
             ctx.Cancel();
-            Debug.WriteLine("FETCH_PLACEHOLDERS Cancelled" + CallbackInfo.NormalizedPath);
+            Styletronix.Debug.WriteLine("FETCH_PLACEHOLDERS Cancelled" + CallbackInfo.NormalizedPath);
         }
     }
 
-    public void FETCH_DATA(in CldApi.CF_CALLBACK_INFO CallbackInfo, in CldApi.CF_CALLBACK_PARAMETERS CallbackParameters)
+    public void FETCH_DATA(in CF_CALLBACK_INFO CallbackInfo, in CF_CALLBACK_PARAMETERS CallbackParameters)
     {
-        Debug.WriteLine(@"FETCH_DATA: Priority " + CallbackInfo.PriorityHint +
+        Styletronix.Debug.WriteLine(@"FETCH_DATA: Priority " + CallbackInfo.PriorityHint +
             @" / R " + CallbackParameters.FetchData.RequiredFileOffset + @" - " + CallbackParameters.FetchData.RequiredLength +
             @" / O " + CallbackParameters.FetchData.OptionalFileOffset + @" - " + CallbackParameters.FetchData.OptionalLength +
             @" / " + CallbackInfo.NormalizedPath);
@@ -1652,9 +1646,9 @@ public class SyncProvider : IDisposable
         this.fileFetchHelper.Add(data);
     }
 
-    public void CANCEL_FETCH_DATA(in CldApi.CF_CALLBACK_INFO CallbackInfo, in CldApi.CF_CALLBACK_PARAMETERS CallbackParameters)
+    public void CANCEL_FETCH_DATA(in CF_CALLBACK_INFO CallbackInfo, in CF_CALLBACK_PARAMETERS CallbackParameters)
     {
-        Debug.WriteLine(@"CANCEL_FETCH_DATA: " +
+        Styletronix.Debug.WriteLine(@"CANCEL_FETCH_DATA: " +
             @" / " + CallbackParameters.Cancel.FetchData.FileOffset + @" - " + CallbackParameters.Cancel.FetchData.Length +
             @" / " + CallbackInfo.NormalizedPath);
 
@@ -1668,69 +1662,106 @@ public class SyncProvider : IDisposable
         });
     }
 
-    public void NOTIFY_FILE_OPEN_COMPLETION(in CldApi.CF_CALLBACK_INFO CallbackInfo, in CldApi.CF_CALLBACK_PARAMETERS CallbackParameters)
+    public void NOTIFY_FILE_OPEN_COMPLETION(in CF_CALLBACK_INFO CallbackInfo, in CF_CALLBACK_PARAMETERS CallbackParameters)
     {
-        Debug.WriteLine("NOTIFY_FILE_OPEN_COMPLETION: " + CallbackInfo.NormalizedPath);
+        //Styletronix.Debug.WriteLine("NOTIFY_FILE_OPEN_COMPLETION: " + CallbackInfo.NormalizedPath);
     }
 
-    public void NOTIFY_FILE_CLOSE_COMPLETION(in CldApi.CF_CALLBACK_INFO CallbackInfo, in CldApi.CF_CALLBACK_PARAMETERS CallbackParameters)
+    public void NOTIFY_FILE_CLOSE_COMPLETION(in CF_CALLBACK_INFO CallbackInfo, in CF_CALLBACK_PARAMETERS CallbackParameters)
     {
-        Debug.WriteLine("NOTIFY_FILE_CLOSE_COMPLETION: " + CallbackInfo.NormalizedPath);
+        //Styletronix.Debug.WriteLine("NOTIFY_FILE_CLOSE_COMPLETION: " + CallbackInfo.NormalizedPath);
     }
 
-    public void NOTIFY_DELETE(in CldApi.CF_CALLBACK_INFO CallbackInfo, in CldApi.CF_CALLBACK_PARAMETERS CallbackParameters)
+
+    private readonly ActionBlock<DeleteAction> DeleteQueue;
+    private class DeleteAction
     {
-        Debug.WriteLine("NOTIFY_DELETE: " + CallbackInfo.NormalizedPath);
-
-        bool isDirectory = CallbackParameters.Delete.Flags.HasFlag(CldApi.CF_CALLBACK_DELETE_FLAGS.CF_CALLBACK_DELETE_FLAG_IS_DIRECTORY);
-        CldApi.CF_OPERATION_INFO opInfo = CreateOPERATION_INFO(CallbackInfo, CldApi.CF_OPERATION_TYPE.CF_OPERATION_TYPE_ACK_DELETE);
-
-        NOTIFY_DELETE_Internal(GetRelativePath(CallbackInfo), isDirectory, opInfo);
+        public CF_OPERATION_INFO OpInfo;
+        public string RelativePath;
+        public bool IsDirectory;
     }
-    public async void NOTIFY_DELETE_Internal(string RelativeFileName, bool isDirectory, CldApi.CF_OPERATION_INFO opInfo)
+
+    public void NOTIFY_DELETE(in CF_CALLBACK_INFO CallbackInfo, in CF_CALLBACK_PARAMETERS CallbackParameters)
+    {
+        //Styletronix.Debug.WriteLine("NOTIFY_DELETE: " + CallbackInfo.NormalizedPath);
+
+        DeleteQueue.Post(new DeleteAction()
+        {
+            OpInfo = CreateOPERATION_INFO(CallbackInfo, CF_OPERATION_TYPE.CF_OPERATION_TYPE_ACK_DELETE),
+            IsDirectory = CallbackParameters.Delete.Flags.HasFlag(CF_CALLBACK_DELETE_FLAGS.CF_CALLBACK_DELETE_FLAG_IS_DIRECTORY),
+            RelativePath = GetRelativePath(CallbackInfo)
+        });
+
+        //NOTIFY_DELETE_Internal(GetRelativePath(CallbackInfo), isDirectory, opInfo);
+    }
+    private async Task NOTIFY_DELETE_Action(DeleteAction dat)
     {
         NTStatus status;
+        string fullPath = this.SyncContext.LocalRootFolder + "\\" + dat.RelativePath;
 
-        var result = await SyncContext.ServerProvider.DeleteFileAsync(RelativeFileName, isDirectory);
-        if (result.Succeeded)
+        if (!(dat.IsDirectory ? Directory.Exists(fullPath) : File.Exists(fullPath)))
         {
             status = NTStatus.STATUS_SUCCESS;
+            goto skip;
+        }
+
+        if (fullPath.Contains(@"$Recycle.bin"))
+        {
+            status = NTStatus.STATUS_SUCCESS;
+            goto skip;
+        }
+
+        var pl = new ExtendedPlaceholderState(fullPath);
+        if (pl.PlaceholderInfoBasic.PinState == CF_PIN_STATE.CF_PIN_STATE_EXCLUDED)
+        {
+            status = NTStatus.STATUS_SUCCESS;
+            goto skip;
+        }
+
+        var result = await SyncContext.ServerProvider.DeleteFileAsync(dat.RelativePath, dat.IsDirectory);
+        if (result.Succeeded)
+        {
+            Styletronix.Debug.WriteLine("Deleted: " + dat.RelativePath);
         }
         else
         {
-            status = NTStatus.STATUS_ACCESS_DENIED;
+            Styletronix.Debug.WriteLine("Delete FAILED " + result.Status.ToString() + ": " + dat.RelativePath); ;
         }
+        status = (int)result.Status;
 
-        CldApi.CF_OPERATION_PARAMETERS opParams = CldApi.CF_OPERATION_PARAMETERS.Create(new CldApi.CF_OPERATION_PARAMETERS.ACKDELETE
+
+    skip:
+        CF_OPERATION_PARAMETERS opParams = CF_OPERATION_PARAMETERS.Create(new CF_OPERATION_PARAMETERS.ACKDELETE
         {
-            Flags = CldApi.CF_OPERATION_ACK_DELETE_FLAGS.CF_OPERATION_ACK_DELETE_FLAG_NONE,
+            Flags = CF_OPERATION_ACK_DELETE_FLAGS.CF_OPERATION_ACK_DELETE_FLAG_NONE,
             CompletionStatus = status
         });
 
-        HRESULT ret = CldApi.CfExecute(opInfo, ref opParams);
-        Debug.WriteLine(ret.Succeeded);
+        Styletronix.Debug.LogResponse(CfExecute(dat.OpInfo, ref opParams));
     }
 
-    public void NOTIFY_DELETE_COMPLETION(in CldApi.CF_CALLBACK_INFO CallbackInfo, in CldApi.CF_CALLBACK_PARAMETERS CallbackParameters)
+
+
+    public void NOTIFY_DELETE_COMPLETION(in CF_CALLBACK_INFO CallbackInfo, in CF_CALLBACK_PARAMETERS CallbackParameters)
     {
-        Debug.WriteLine("NOTIFY_DELETE_COMPLETION: " + CallbackInfo.NormalizedPath);
+        // Styletronix.Debug.WriteLine("NOTIFY_DELETE_COMPLETION: " + CallbackInfo.NormalizedPath);
     }
 
-    public void NOTIFY_RENAME(in CldApi.CF_CALLBACK_INFO CallbackInfo, in CldApi.CF_CALLBACK_PARAMETERS CallbackParameters)
+    public void NOTIFY_RENAME(in CF_CALLBACK_INFO CallbackInfo, in CF_CALLBACK_PARAMETERS CallbackParameters)
     {
-        Debug.WriteLine("NOTIFY_RENAME: " + CallbackInfo.NormalizedPath + " -> " + CallbackParameters.Rename.TargetPath);
+        Styletronix.Debug.WriteLine("NOTIFY_RENAME: " + CallbackInfo.NormalizedPath + " -> " + CallbackParameters.Rename.TargetPath);
 
         if (CallbackParameters.Rename.TargetPath.StartsWith(@"\$Recycle.Bin\"))
         {
 
         }
-        CldApi.CF_OPERATION_INFO opInfo = CreateOPERATION_INFO(CallbackInfo, CldApi.CF_OPERATION_TYPE.CF_OPERATION_TYPE_ACK_RENAME);
+        CF_OPERATION_INFO opInfo = CreateOPERATION_INFO(CallbackInfo, CF_OPERATION_TYPE.CF_OPERATION_TYPE_ACK_RENAME);
 
         NOTIFY_RENAME_Internal(GetRelativePath(CallbackInfo), GetRelativePath(CallbackParameters.Rename),
-            CallbackParameters.Rename.Flags.HasFlag(CldApi.CF_CALLBACK_RENAME_FLAGS.CF_CALLBACK_RENAME_FLAG_IS_DIRECTORY), opInfo);
+            CallbackParameters.Rename.Flags.HasFlag(CF_CALLBACK_RENAME_FLAGS.CF_CALLBACK_RENAME_FLAG_IS_DIRECTORY), opInfo);
 
     }
-    public async void NOTIFY_RENAME_Internal(string RelativeFileName, string RelativeFileNameDestination, bool isDirectory, CldApi.CF_OPERATION_INFO opInfo)
+    public async void NOTIFY_RENAME_Internal(string RelativeFileName, string RelativeFileNameDestination, bool isDirectory, CF_OPERATION_INFO opInfo)
     {
         NTStatus status;
 
@@ -1752,53 +1783,53 @@ public class SyncProvider : IDisposable
         }
 
 
-        CldApi.CF_OPERATION_PARAMETERS opParams = CldApi.CF_OPERATION_PARAMETERS.Create(new CldApi.CF_OPERATION_PARAMETERS.ACKRENAME
+        CF_OPERATION_PARAMETERS opParams = CF_OPERATION_PARAMETERS.Create(new CF_OPERATION_PARAMETERS.ACKRENAME
         {
-            Flags = CldApi.CF_OPERATION_ACK_RENAME_FLAGS.CF_OPERATION_ACK_RENAME_FLAG_NONE,
+            Flags = CF_OPERATION_ACK_RENAME_FLAGS.CF_OPERATION_ACK_RENAME_FLAG_NONE,
             CompletionStatus = status
         });
 
-        HRESULT ret = CldApi.CfExecute(opInfo, ref opParams);
-        Debug.WriteLine(ret.Succeeded);
+        HRESULT ret = CfExecute(opInfo, ref opParams);
+        Styletronix.Debug.WriteLine(ret.Succeeded);
     }
 
-    public void NOTIFY_RENAME_COMPLETION(in CldApi.CF_CALLBACK_INFO CallbackInfo, in CldApi.CF_CALLBACK_PARAMETERS CallbackParameters)
+    public void NOTIFY_RENAME_COMPLETION(in CF_CALLBACK_INFO CallbackInfo, in CF_CALLBACK_PARAMETERS CallbackParameters)
     {
-        Debug.WriteLine("NOTIFY_RENAME_COMPLETION: " + CallbackParameters.RenameCompletion.SourcePath + " -> " + CallbackInfo.NormalizedPath);
+        Styletronix.Debug.WriteLine("NOTIFY_RENAME_COMPLETION: " + CallbackParameters.RenameCompletion.SourcePath + " -> " + CallbackInfo.NormalizedPath);
     }
 
-    public void NOTIFY_DEHYDRATE(in CldApi.CF_CALLBACK_INFO CallbackInfo, in CldApi.CF_CALLBACK_PARAMETERS CallbackParameters)
+    public void NOTIFY_DEHYDRATE(in CF_CALLBACK_INFO CallbackInfo, in CF_CALLBACK_PARAMETERS CallbackParameters)
     {
-        Debug.WriteLine("NOTIFY_DEHYDRATE: " + CallbackInfo.NormalizedPath + " Reason: " + CallbackParameters.Dehydrate.Reason.ToString());
+        Styletronix.Debug.WriteLine("NOTIFY_DEHYDRATE: " + CallbackInfo.NormalizedPath + " Reason: " + CallbackParameters.Dehydrate.Reason.ToString());
 
-        CldApi.CF_OPERATION_INFO opInfo = CreateOPERATION_INFO(CallbackInfo, CldApi.CF_OPERATION_TYPE.CF_OPERATION_TYPE_ACK_DEHYDRATE);
+        CF_OPERATION_INFO opInfo = CreateOPERATION_INFO(CallbackInfo, CF_OPERATION_TYPE.CF_OPERATION_TYPE_ACK_DEHYDRATE);
 
-        CldApi.CF_OPERATION_PARAMETERS opParams = CldApi.CF_OPERATION_PARAMETERS.Create(new CldApi.CF_OPERATION_PARAMETERS.ACKDEHYDRATE
+        CF_OPERATION_PARAMETERS opParams = CF_OPERATION_PARAMETERS.Create(new CF_OPERATION_PARAMETERS.ACKDEHYDRATE
         {
-            Flags = CldApi.CF_OPERATION_ACK_DEHYDRATE_FLAGS.CF_OPERATION_ACK_DEHYDRATE_FLAG_NONE,
+            Flags = CF_OPERATION_ACK_DEHYDRATE_FLAGS.CF_OPERATION_ACK_DEHYDRATE_FLAG_NONE,
             CompletionStatus = NTStatus.STATUS_SUCCESS,
         });
 
         //TODO: Check if Dehydrate is allowed.
 
-        HRESULT ret = CldApi.CfExecute(opInfo, ref opParams);
-        Debug.WriteLine(ret.ToString());
+        HRESULT ret = CfExecute(opInfo, ref opParams);
+        Styletronix.Debug.WriteLine(ret.ToString());
     }
 
-    public void NOTIFY_DEHYDRATE_COMPLETION(in CldApi.CF_CALLBACK_INFO CallbackInfo, in CldApi.CF_CALLBACK_PARAMETERS CallbackParameters)
+    public void NOTIFY_DEHYDRATE_COMPLETION(in CF_CALLBACK_INFO CallbackInfo, in CF_CALLBACK_PARAMETERS CallbackParameters)
     {
-        Debug.WriteLine("NOTIFY_DEHYDRATE_COMPLETION: " + CallbackInfo.NormalizedPath + " Reason: " + CallbackParameters.DehydrateCompletion.Reason.ToString());
+        Styletronix.Debug.WriteLine("NOTIFY_DEHYDRATE_COMPLETION: " + CallbackInfo.NormalizedPath + " Reason: " + CallbackParameters.DehydrateCompletion.Reason.ToString());
     }
 
-    public void VALIDATE_DATA(in CldApi.CF_CALLBACK_INFO CallbackInfo, in CldApi.CF_CALLBACK_PARAMETERS CallbackParameters)
+    public void VALIDATE_DATA(in CF_CALLBACK_INFO CallbackInfo, in CF_CALLBACK_PARAMETERS CallbackParameters)
     {
-        Debug.WriteLine("VALIDATE_DATA: " + CallbackInfo.NormalizedPath);
+        Styletronix.Debug.WriteLine("VALIDATE_DATA: " + CallbackInfo.NormalizedPath);
 
-        CldApi.CF_OPERATION_INFO opInfo = CreateOPERATION_INFO(CallbackInfo, CldApi.CF_OPERATION_TYPE.CF_OPERATION_TYPE_ACK_DATA);
+        CF_OPERATION_INFO opInfo = CreateOPERATION_INFO(CallbackInfo, CF_OPERATION_TYPE.CF_OPERATION_TYPE_ACK_DATA);
 
-        CldApi.CF_OPERATION_PARAMETERS opParams = CldApi.CF_OPERATION_PARAMETERS.Create(new CldApi.CF_OPERATION_PARAMETERS.ACKDATA
+        CF_OPERATION_PARAMETERS opParams = CF_OPERATION_PARAMETERS.Create(new CF_OPERATION_PARAMETERS.ACKDATA
         {
-            Flags = CldApi.CF_OPERATION_ACK_DATA_FLAGS.CF_OPERATION_ACK_DATA_FLAG_NONE,
+            Flags = CF_OPERATION_ACK_DATA_FLAGS.CF_OPERATION_ACK_DATA_FLAG_NONE,
             CompletionStatus = NTStatus.STATUS_SUCCESS,
             Length = CallbackParameters.ValidateData.RequiredLength,
             Offset = CallbackParameters.ValidateData.RequiredFileOffset
@@ -1807,15 +1838,15 @@ public class SyncProvider : IDisposable
         //TODO: Check if File on Server is in Sync.
 
 
-        HRESULT ret = CldApi.CfExecute(opInfo, ref opParams);
-        Debug.WriteLine(ret.ToString());
+        HRESULT ret = CfExecute(opInfo, ref opParams);
+        Styletronix.Debug.WriteLine(ret.ToString());
     }
     #endregion
 
 
-    private CldApi.CF_OPERATION_INFO CreateOPERATION_INFO(in CldApi.CF_CALLBACK_INFO CallbackInfo, CldApi.CF_OPERATION_TYPE OperationType)
+    private CF_OPERATION_INFO CreateOPERATION_INFO(in CF_CALLBACK_INFO CallbackInfo, CF_OPERATION_TYPE OperationType)
     {
-        CldApi.CF_OPERATION_INFO opInfo = new CldApi.CF_OPERATION_INFO()
+        CF_OPERATION_INFO opInfo = new CF_OPERATION_INFO()
         {
             Type = OperationType,
             ConnectionKey = CallbackInfo.ConnectionKey,
@@ -1827,31 +1858,11 @@ public class SyncProvider : IDisposable
         opInfo.StructSize = (uint)Marshal.SizeOf(opInfo);
         return opInfo;
     }
-    private CldApi.CF_PLACEHOLDER_CREATE_INFO CreatePlaceholder(Placeholder fileInfo, string fileIdentity)
+
+    internal string GetRelativePath(string fullPath)
     {
-        CldApi.CF_PLACEHOLDER_CREATE_INFO cfInfo = new CldApi.CF_PLACEHOLDER_CREATE_INFO();
+        if (fullPath.Equals(this.SyncContext.LocalRootFolder)){ return ""; }
 
-        SyncProviderUtils.AddFileIdentity(ref cfInfo, fileIdentity);
-
-        cfInfo.RelativeFileName = fileInfo.RelativeFileName;
-        cfInfo.FsMetadata = new CldApi.CF_FS_METADATA
-        {
-            FileSize = fileInfo.FileSize,
-            BasicInfo = new Kernel32.FILE_BASIC_INFO
-            {
-                FileAttributes = (FileFlagsAndAttributes)fileInfo.FileAttributes,
-                CreationTime = fileInfo.CreationTime.ToFileTimeStruct(),
-                LastWriteTime = fileInfo.LastWriteTime.ToFileTimeStruct(),
-                LastAccessTime = fileInfo.LastAccessTime.ToFileTimeStruct(),
-                ChangeTime = fileInfo.LastWriteTime.ToFileTimeStruct()
-            }
-        };
-        cfInfo.Flags = CldApi.CF_PLACEHOLDER_CREATE_FLAGS.CF_PLACEHOLDER_CREATE_FLAG_MARK_IN_SYNC;
-
-        return cfInfo;
-    }
-    private string GetRelativePath(string fullPath)
-    {
         if (fullPath.StartsWith(this.SyncContext.LocalRootFolder, StringComparison.CurrentCultureIgnoreCase))
         {
             return fullPath.Remove(0, this.SyncContext.LocalRootFolder.Length + 1);
@@ -1861,7 +1872,7 @@ public class SyncProvider : IDisposable
             throw new NotSupportedException("Pad nicht unterstützt: " + fullPath);
         }
     }
-    private string GetRelativePath(in CldApi.CF_CALLBACK_INFO callbackInfo)
+    internal string GetRelativePath(in CF_CALLBACK_INFO callbackInfo)
     {
         if (callbackInfo.NormalizedPath.StartsWith(this.SyncContext.LocalRootFolderNormalized, StringComparison.CurrentCultureIgnoreCase))
         {
@@ -1870,7 +1881,7 @@ public class SyncProvider : IDisposable
         }
         return callbackInfo.NormalizedPath;
     }
-    private string GetRelativePath(in CldApi.CF_CALLBACK_PARAMETERS.RENAME callbackInfo)
+    internal string GetRelativePath(in CF_CALLBACK_PARAMETERS.RENAME callbackInfo)
     {
         if (callbackInfo.TargetPath.StartsWith(this.SyncContext.LocalRootFolderNormalized, StringComparison.CurrentCultureIgnoreCase))
         {
@@ -1880,7 +1891,7 @@ public class SyncProvider : IDisposable
 
         return callbackInfo.TargetPath;
     }
-    private string GetLocalFullPath(in CldApi.CF_CALLBACK_INFO callbackInfo)
+    internal string GetLocalFullPath(in CF_CALLBACK_INFO callbackInfo)
     {
         //string fullPath = callbackInfo.NormalizedPath.Remove(0, this.SyncContext.LocalRootFolderNormalized.Length);
         //fullPath = fullPath.TrimStart(char.Parse("\\"));

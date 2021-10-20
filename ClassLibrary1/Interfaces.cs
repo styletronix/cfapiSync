@@ -12,27 +12,85 @@ namespace Styletronix.CloudSyncProvider
         public UploadMode mode;
         public string ETag;
     }
-    public class OpenAsyncResult
+    public class ReadFileOpenResult : GenericResult
     {
-        public string ETag;
+        public Placeholder Placeholder;
+    }
+    public class ReadFileReadResult : GenericResult
+    {
+        public int BytesRead;
+    }
+    public class ReadFileCloseResult : GenericResult
+    {
     }
 
-    public interface iServerFileProvider
+    public class WriteFileOpenResult : GenericResult
+    {
+        public Placeholder Placeholder;
+    }
+    public class WriteFileWriteResult : GenericResult
+    {
+
+    }
+    public class WriteFileCloseResult : GenericResult
+    {
+        public Placeholder Placeholder;
+    }
+
+    public class GetFileInfoResult : GenericResult
+    {
+        public Placeholder Placeholder;
+    }
+
+    public enum CloudExceptions
+    {
+        Offline = 1,
+        FileOrDirectoryNotFound = 2,
+        AccessDenied = 3
+    }
+
+    public interface IServerFileProvider
     {
         public SyncProviderUtils.SyncContext SyncContext { get; set; }
 
-        public iReadFileAsync GetNewReadFile();
+        public IReadFileAsync GetNewReadFile();
 
-        public iWriteFileAsync GetNewWriteFile();
+        public IWriteFileAsync GetNewWriteFile();
 
-        public iFileListAsync GetNewFileList();
-
+        public IFileListAsync GetNewFileList();
+        /// <summary>
+        /// Delete a File or Directory
+        /// </summary>
+        /// <param name="RelativeFileName"></param>
+        /// <param name="isDirectory"></param>
+        /// <returns></returns>
         public Task<DeleteFileResult> DeleteFileAsync(string RelativeFileName, bool isDirectory);
+        /// <summary>
+        /// Move or Rename a File or Directory
+        /// </summary>
+        /// <param name="RelativeFileName"></param>
+        /// <param name="RelativeDestination"></param>
+        /// <param name="isDirectory"></param>
+        /// <returns></returns>
         public Task<MoveFileResult> MoveFileAsync(string RelativeFileName, string RelativeDestination, bool isDirectory);
-        public Task<Placeholder> GetFileInfo(string RelativeFileName, bool isDirectory);
+        /// <summary>
+        /// Get Placeholder-Data for a File or Directory
+        /// </summary>
+        /// <param name="RelativeFileName"></param>
+        /// <param name="isDirectory"></param>
+        /// <returns></returns>
+        public Task<GetFileInfoResult> GetFileInfo(string RelativeFileName, bool isDirectory);
+        /// <summary>
+        /// Create a new File or Directory. It is likely that CreateFileAsync is not called to create new files. 
+        /// Files should created by calling IWriteFileAsync.OpenAsync();
+        /// </summary>
+        /// <param name="RelativeFileName"></param>
+        /// <param name="isDirectory"></param>
+        /// <returns></returns>
+        public Task<CreateFileResult> CreateFileAsync(string RelativeFileName, bool isDirectory);
     }
 
-    public interface iReadFileAsync : IDisposable
+    public interface IReadFileAsync : IDisposable, IAsyncDisposable
     {
 
         /// <summary>
@@ -42,7 +100,7 @@ namespace Styletronix.CloudSyncProvider
         /// <param name="srcFolder"></param>
         /// <param name="ctx"></param>
         /// <returns></returns>
-        public Task<OpenAsyncResult> OpenAsync(OpenAsyncParams e);
+        public Task<ReadFileOpenResult> OpenAsync(OpenAsyncParams e);
 
         /// <summary>
         /// Read a maximum of <paramref name="count"/> bytes of the file, starting at byte <paramref name="offset"/> and write the data to the supplied <paramref name="buffer"/>
@@ -52,35 +110,36 @@ namespace Styletronix.CloudSyncProvider
         /// <param name="offset">Offset of the File to start reading</param>
         /// <param name="count">Maximum Bytes to read</param>
         /// <returns>Bytes read and written to the <paramref name="buffer"/></returns>
-        public System.Threading.Tasks.Task<int> ReadAsync(byte[] buffer, int offsetBuffer, long offset, int count);
+        public Task<ReadFileReadResult> ReadAsync(byte[] buffer, int offsetBuffer, long offset, int count);
 
-        public System.Threading.Tasks.Task CloseAsync();
+        public Task<ReadFileCloseResult> CloseAsync();
     }
 
-    public interface iWriteFileAsync : IDisposable
+    public interface IWriteFileAsync : IDisposable, IAsyncDisposable
     {
-        public UploadMode supportedUploadModes { get; }
-        public Task<OpenAsyncResult> OpenAsync(OpenAsyncParams e);
-        public Task WriteAsync(byte[] buffer, int offsetBuffer, long offset, int count);
-        public Task<Placeholder> CloseAsync(bool completed);
+        public UploadMode SupportedUploadModes { get; }
+        public Task<WriteFileOpenResult> OpenAsync(OpenAsyncParams e);
+        public Task<WriteFileWriteResult> WriteAsync(byte[] buffer, int offsetBuffer, long offset, int count);
+        public Task<WriteFileCloseResult> CloseAsync(bool completed);
     }
 
-    public interface iFileListAsync : IDisposable
+    public interface IFileListAsync : IDisposable, IAsyncDisposable
     {
-        public System.Threading.Tasks.Task OpenAsync(string RelativeFileName, System.Threading.CancellationToken ctx);
+        public Task OpenAsync(string RelativeFileName, System.Threading.CancellationToken ctx);
 
-        public System.Threading.Tasks.Task<bool> MoveNextAsync();
+        public Task<bool> MoveNextAsync();
 
         public Placeholder Current { get; }
 
-        public System.Threading.Tasks.Task CloseAsync();
+        public Task CloseAsync();
     }
 
-    public enum UploadMode
+    [Flags]
+    public enum UploadMode : short
     {
-        fullFile = 1,
-        resume = 2,
-        partialUpdate = 4
+        FullFile = 0,
+        Resume = 1,
+        PartialUpdate = 2
     }
 
     public class Placeholder : BasicFileInfo
@@ -94,7 +153,7 @@ namespace Styletronix.CloudSyncProvider
             this.LastWriteTime = fileInfo.LastWriteTime;
             this.LastAccessTime = fileInfo.LastAccessTime;
             this.ChangeTime = fileInfo.LastWriteTime;
-            this.ETag = "_" + fileInfo.LastWriteTime.Ticks + "_";
+            this.ETag = "_" + fileInfo.LastWriteTime.ToUniversalTime().Ticks + "_" + this.FileSize;
         }
         public Placeholder(string fullPath)
         {
@@ -107,7 +166,7 @@ namespace Styletronix.CloudSyncProvider
             this.LastWriteTime = fileInfo.LastWriteTime;
             this.LastAccessTime = fileInfo.LastAccessTime;
             this.ChangeTime = fileInfo.LastWriteTime;
-            this.ETag = "_" + fileInfo.LastWriteTime.Ticks + "_";
+            this.ETag = "_" + fileInfo.LastWriteTime.ToUniversalTime().Ticks + "_" + this.FileSize;
         }
 
         public string RelativeFileName;
@@ -130,12 +189,93 @@ namespace Styletronix.CloudSyncProvider
     {
 
     }
+    public class CreateFileResult: GenericResult
+    {
+        public Placeholder Placeholder;
+    }
 
     public class GenericResult
     {
+        public GenericResult()
+        {
+            this.Succeeded = true;
+            this.Status = CloudFilterApi.NtStatus.STATUS_SUCCESS;
+            this.Message = this.Status.ToString();
+        }
+        public GenericResult(Exception ex)
+        {
+            this.SetException(ex);
+        }
+        public GenericResult(CloudExceptions ex)
+        {
+            this.SetException(ex);
+        }
+        public GenericResult(CloudFilterApi.NtStatus status)
+        {
+            if (status == CloudFilterApi.NtStatus.STATUS_SUCCESS)
+                this.Succeeded = true;
+            this.Status = status;
+            this.Message = this.Status.ToString();
+        }
+        public GenericResult(int ntStatus)
+        {
+            this.Status = (CloudFilterApi.NtStatus)ntStatus;
+            this.Succeeded = (ntStatus == 0);
+            this.Message = this.Status.ToString();
+        }
+        public GenericResult(CloudFilterApi.NtStatus status, string message)
+        {
+            if (status == CloudFilterApi.NtStatus.STATUS_SUCCESS)
+                this.Succeeded = true;
+            this.Status = status;
+            this.Message = message;
+        }
+
+        public static implicit operator bool(GenericResult instance)
+        {
+            return instance.Succeeded;
+        }
+
+        public void SetException(Exception ex)
+        {
+            this.Succeeded = false;
+            this.Message = ex.ToString();
+
+            this.Status = ex switch
+            {
+                FileNotFoundException => CloudFilterApi.NtStatus.STATUS_NOT_A_CLOUD_FILE,
+                DirectoryNotFoundException => CloudFilterApi.NtStatus.STATUS_NOT_A_CLOUD_FILE,
+                UnauthorizedAccessException => CloudFilterApi.NtStatus.STATUS_CLOUD_FILE_ACCESS_DENIED,
+                IOException => CloudFilterApi.NtStatus.STATUS_CLOUD_FILE_IN_USE,
+                NotSupportedException => CloudFilterApi.NtStatus.STATUS_CLOUD_FILE_NOT_SUPPORTED,
+                InvalidOperationException => CloudFilterApi.NtStatus.STATUS_CLOUD_FILE_INVALID_REQUEST,
+                _ => CloudFilterApi.NtStatus.STATUS_CLOUD_FILE_UNSUCCESSFUL
+            };
+        }
+        public void SetException(CloudExceptions ex)
+        {
+            this.Succeeded = false;
+            this.Message = ex.ToString();
+
+            this.Status = ex switch
+            {
+                CloudExceptions.Offline => CloudFilterApi.NtStatus.STATUS_CLOUD_FILE_NETWORK_UNAVAILABLE,
+                CloudExceptions.FileOrDirectoryNotFound => CloudFilterApi.NtStatus.STATUS_NOT_A_CLOUD_FILE,
+                CloudExceptions.AccessDenied => CloudFilterApi.NtStatus.STATUS_CLOUD_FILE_ACCESS_DENIED,
+                _ => CloudFilterApi.NtStatus.STATUS_CLOUD_FILE_UNSUCCESSFUL
+            };
+        }
+
         public bool Succeeded;
         public string Message;
-        public Exception Exception;
+        public CloudFilterApi.NtStatus Status;
+        public void ThrowOnFailure()
+        {
+            if (!this.Succeeded)
+            {
+                throw new System.ComponentModel.Win32Exception((int)this.Status, this.Message);
+            }
+        }
     }
 
     public class BasicSyncProviderInfo
@@ -148,7 +288,7 @@ namespace Styletronix.CloudSyncProvider
     public class SyncProviderParameters
     {
         public BasicSyncProviderInfo ProviderInfo;
-        public iServerFileProvider ServerProvider;
+        public IServerFileProvider ServerProvider;
         public string LocalDataPath;
     }
 }

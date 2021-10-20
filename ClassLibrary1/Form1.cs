@@ -51,11 +51,11 @@ namespace ClassLibrary1
             this._SyncProvider.Stop();
         }
 
-        private void button2_Click(object sender, EventArgs e)
+        private async  void button2_Click(object sender, EventArgs e)
         {
             if (startCTX != null) { startCTX.Cancel(); }
 
-            this._SyncProvider.RevertAllPlaceholders(new System.Threading.CancellationToken() );
+           await  this._SyncProvider.RevertAllPlaceholders(new System.Threading.CancellationToken() );
         }
 
         private void button3_Click(object sender, EventArgs e)
