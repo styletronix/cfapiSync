@@ -74,6 +74,7 @@
   <ItemGroup>
     <Compile Include="AutoResetEventAsync.cs" />
     <Compile Include="CloudFilterApi.ExtendedPlaceholderState.cs" />
+    <Compile Include="ServerProvider.ServerCallback.cs" />
     <Compile Include="SyncProvider.LocalCallbacks.cs" />
     <Compile Include="SyncProvider.RemoteChanges.cs" />
     <Compile Include="SyncProviderUtils.cs" />

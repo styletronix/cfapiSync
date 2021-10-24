@@ -140,54 +140,10 @@ public partial class SyncProvider
     {
         Styletronix.Debug.WriteLine("NOTIFY_RENAME_COMPLETION: " + CallbackParameters.RenameCompletion.SourcePath + " -> " + CallbackInfo.NormalizedPath, System.Diagnostics.TraceLevel.Verbose);
     }
-    public void NOTIFY_DEHYDRATE(in CF_CALLBACK_INFO CallbackInfo, in CF_CALLBACK_PARAMETERS CallbackParameters)
-    {
-        Styletronix.Debug.WriteLine("NOTIFY_DEHYDRATE: " + CallbackInfo.NormalizedPath + " Reason: " + CallbackParameters.Dehydrate.Reason.ToString(), System.Diagnostics.TraceLevel.Info);
-
-        CF_OPERATION_INFO opInfo = CreateOPERATION_INFO(CallbackInfo, CF_OPERATION_TYPE.CF_OPERATION_TYPE_ACK_DEHYDRATE);
-
-        CF_OPERATION_PARAMETERS opParams = CF_OPERATION_PARAMETERS.Create(new CF_OPERATION_PARAMETERS.ACKDEHYDRATE
-        {
-            Flags = CF_OPERATION_ACK_DEHYDRATE_FLAGS.CF_OPERATION_ACK_DEHYDRATE_FLAG_NONE,
-            CompletionStatus = NTStatus.STATUS_SUCCESS,
-        });
-
-        //TODO: Check if Dehydrate is allowed.
-
-        HRESULT ret = CfExecute(opInfo, ref opParams);
-        Styletronix.Debug.WriteLine(ret.ToString(), System.Diagnostics.TraceLevel.Error);
-    }
-    public void NOTIFY_DEHYDRATE_COMPLETION(in CF_CALLBACK_INFO CallbackInfo, in CF_CALLBACK_PARAMETERS CallbackParameters)
-    {
-        Styletronix.Debug.WriteLine("NOTIFY_DEHYDRATE_COMPLETION: " + CallbackInfo.NormalizedPath + " Reason: " + CallbackParameters.DehydrateCompletion.Reason.ToString(), System.Diagnostics.TraceLevel.Verbose);
-    }
-    public void VALIDATE_DATA(in CF_CALLBACK_INFO CallbackInfo, in CF_CALLBACK_PARAMETERS CallbackParameters)
-    {
-        Styletronix.Debug.WriteLine("VALIDATE_DATA: " + CallbackInfo.NormalizedPath, System.Diagnostics.TraceLevel.Info);
-
-        CF_OPERATION_INFO opInfo = CreateOPERATION_INFO(CallbackInfo, CF_OPERATION_TYPE.CF_OPERATION_TYPE_ACK_DATA);
-
-        CF_OPERATION_PARAMETERS opParams = CF_OPERATION_PARAMETERS.Create(new CF_OPERATION_PARAMETERS.ACKDATA
-        {
-            Flags = CF_OPERATION_ACK_DATA_FLAGS.CF_OPERATION_ACK_DATA_FLAG_NONE,
-            CompletionStatus = NTStatus.STATUS_SUCCESS,
-            Length = CallbackParameters.ValidateData.RequiredLength,
-            Offset = CallbackParameters.ValidateData.RequiredFileOffset
-        });
-
-        //TODO: Check if File on Server is in Sync.
-
-
-        HRESULT ret = CfExecute(opInfo, ref opParams);
-        Styletronix.Debug.WriteLine(ret.ToString(), System.Diagnostics.TraceLevel.Error);
-    }
-
 
 
     public async void FETCH_PLACEHOLDERS_Internal(string relativePath, CF_OPERATION_INFO opInfo, string pattern, CancellationToken cancellationToken)
     {
-        //SetInSyncState(SyncContext.LocalRootFolder + "\\" + relativePath, CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_NOT_IN_SYNC, true);
-
         using SafePlaceHolderList infos = new();
         List<Placeholder> placeholders = new();
         NtStatus completionStatus = NtStatus.STATUS_SUCCESS;
@@ -205,11 +161,13 @@ public partial class SyncProvider
             var getNextResult = await fileList.GetNextAsync();
             while (getNextResult.Succeeded)
             {
-                string fileIdString = relativePath + "\\" + getNextResult.Placeholder.RelativeFileName;
-                if (getNextResult.Placeholder.FileAttributes.HasFlag(FileAttributes.Directory)) { fileIdString += "\\"; }
+                var relativeFileName = relativePath + "\\" + getNextResult.Placeholder.RelativeFileName;
 
-                placeholders.Add(getNextResult.Placeholder);
-                infos.Add(Styletronix.CloudFilterApi.CreatePlaceholderInfo(getNextResult.Placeholder, fileIdString));
+                if (!IsExcludedFile(relativeFileName) && !getNextResult.Placeholder.FileAttributes.HasFlag(FileAttributes.System))
+                {
+                    placeholders.Add(getNextResult.Placeholder);
+                    infos.Add(Styletronix.CloudFilterApi.CreatePlaceholderInfo(getNextResult.Placeholder,  Guid.NewGuid().ToString()));
+                }
 
                 if (cancellationToken.IsCancellationRequested) break;
 
@@ -225,6 +183,9 @@ public partial class SyncProvider
 
 
         skip:
+        if (completionStatus == NtStatus.STATUS_NOT_A_CLOUD_FILE)
+            completionStatus = NtStatus.STATUS_SUCCESS;
+
         uint total = (uint)infos.Count;
         CF_OPERATION_PARAMETERS.TRANSFERPLACEHOLDERS TpParam = new()
         {
@@ -266,6 +227,20 @@ public partial class SyncProvider
 
         SetInSyncState(SyncContext.LocalRootFolder + "\\" + relativePath, CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_IN_SYNC, true);
     }
+
+    public bool IsExcludedFile(string relativeOrFullPath)
+    {
+        if (relativeOrFullPath.Contains(@"$Recycle.Bin")) 
+            return true;
+
+        var fileName = Path.GetFileName(relativeOrFullPath);
+        if (fileExclusions.Contains(fileName, StringComparer.CurrentCultureIgnoreCase))
+            return true;
+
+        return false;
+    }
+
+
     public async void NOTIFY_RENAME_Internal(string RelativeFileName, string RelativeFileNameDestination, bool isDirectory, CF_OPERATION_INFO opInfo)
     {
         NTStatus status;
@@ -416,7 +391,7 @@ public partial class SyncProvider
             {
                 CF_OPERATION_PARAMETERS.TRANSFERDATA TpParam = new()
                 {
-                    Length = 1, // Length has to be greater than 0 even if transfer failed....
+                    Length = 1, // Length has to be greater than 0 even if transfer failed or CfExecute fails....
                     Offset = data.RangeStart,
                     Buffer = IntPtr.Zero,
                     Flags = CF_OPERATION_TRANSFER_DATA_FLAGS.CF_OPERATION_TRANSFER_DATA_FLAG_NONE,
@@ -428,19 +403,24 @@ public partial class SyncProvider
                 return;
             }
 
+
+            Placeholder localSimplePlaceholder = null;
+            if (File.Exists(targetFullPath))
+                localSimplePlaceholder = new(targetFullPath);
+
             using (IReadFileAsync fetchFile = SyncContext.ServerProvider.GetNewReadFile())
             {
                 ReadFileOpenResult openAsyncResult = await fetchFile.OpenAsync(new OpenAsyncParams()
                 {
                     RelativeFileName = relativePath,
                     CancellationToken = ctx,
-                    ETag = null // TODO: ETAG ausfüllen:  ETag = "_" + File.GetLastWriteTimeUtc(fullPath).Ticks + "_" + this.fileStream.Length
+                    ETag = localSimplePlaceholder?.ETag
                 });
 
                 CompletionStatus = new NTStatus((uint)openAsyncResult.Status);
                 using ExtendedPlaceholderState localPlaceholder = new(targetFullPath);
 
-                #region "Compare ETag to verify Sync of cloud and local file"
+                // Compare ETag to verify Sync of cloud and local file
                 if (CompletionStatus == NTStatus.STATUS_SUCCESS)
                     if (openAsyncResult.Placeholder?.ETag != localPlaceholder.ETag)
                     {
@@ -448,37 +428,7 @@ public partial class SyncProvider
                         CompletionStatus = new NTStatus((uint)Styletronix.CloudFilterApi.NtStatus.STATUS_CLOUD_FILE_NOT_IN_SYNC);
                         openAsyncResult.Message = Styletronix.CloudFilterApi.NtStatus.STATUS_CLOUD_FILE_NOT_IN_SYNC.ToString();
                     }
-                #endregion
 
-                #region "TODO:  Rehydrate. Current implementation does not work"
-                // Validtion may be required to add to Sync Registration
-
-                //TODO:  Rehydrate. Current implementation does not work
-                //if (CompletionStatus == (uint)Styletronix.CloudFilterApi.NtStatus.STATUS_CLOUD_FILE_NOT_IN_SYNC)
-                //{                 
-                //    using SafeHandlers.SafeAllocCoTaskMem fileIdPtr = new(relativePath);
-                //    using SafeHandlers.SafeAllocCoTaskMem metaPtr = new(Styletronix.CloudFilterApi.CreateFSMetaData(openAsyncResult.Placeholder));
-
-                //    var opInfo2 = new CF_OPERATION_INFO()
-                //    {
-                //        Type = CF_OPERATION_TYPE.CF_OPERATION_TYPE_RESTART_HYDRATION,
-                //        ConnectionKey = this.SyncContext.ConnectionKey,
-                //        TransferKey = data.TransferKey,
-                //        RequestKey = new CF_REQUEST_KEY()
-                //    };
-                //    opInfo2.StructSize = (uint)Marshal.SizeOf(opInfo2);
-                //    var TpParam = new CF_OPERATION_PARAMETERS.RESTARTHYDRATION
-                //    {
-                //        FileIdentity = fileIdPtr,
-                //        FileIdentityLength = (uint)fileIdPtr.Size,
-                //        Flags = CF_OPERATION_RESTART_HYDRATION_FLAGS.CF_OPERATION_RESTART_HYDRATION_FLAG_MARK_IN_SYNC,
-                //        FsMetadata = metaPtr
-                //    };
-                //    var opParams = CF_OPERATION_PARAMETERS.Create(TpParam);
-                //    HRESULT result = CfExecute(opInfo2, ref opParams);
-                //    if (result.Succeeded) { CompletionStatus = NTStatus.STATUS_SUCCESS; }
-                //}
-                #endregion
 
                 if (CompletionStatus != NTStatus.STATUS_SUCCESS)
                 {
@@ -504,8 +454,12 @@ public partial class SyncProvider
                 byte[] stackBuffer = new byte[stackSize];
                 byte[] buffer = new byte[chunkSize];
 
+                long minRangeStart = long.MaxValue;
+                long totalRead = 0;
+
                 while (data != null)
                 {
+                    minRangeStart = Math.Min(minRangeStart, data.RangeStart);
                     long currentRangeStart = data.RangeStart;
                     long currentRangeEnd = data.RangeEnd;
 
@@ -538,7 +492,8 @@ public partial class SyncProvider
 
                         if (data.RangeEnd == 0 || data.RangeEnd < currentOffset || data.RangeStart > currentOffset) { continue; }
 
-                        this.ReportProviderProgress(data.TransferKey, totalLength, currentOffset + dataRead);
+                        totalRead += dataRead;
+                        this.ReportProviderProgress(data.TransferKey, currentRangeEnd - minRangeStart, totalRead);
 
                         if (dataRead < readLength && CompletionStatus == NTStatus.STATUS_SUCCESS)
                         {

@@ -41,46 +41,45 @@ public partial class SyncProvider : IDisposable
                 switch (e.ChangeType)
                 {
                     case WatcherChangeTypes.Deleted:
-                        await ChangedDataQueueBlock.SendAsync(localFullPath);
-
-                        break;
-                    case WatcherChangeTypes.Renamed:
-                        var localOldFullPath = GetLocalFullPath(e.OldRelativePath);
-                        //var localPlaceholder = new ExtendedPlaceholderState(localOldFullPath);
-                        //var inSync = (localPlaceholder.PlaceholderInfoBasic.InSyncState == CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_IN_SYNC && localPlaceholder.ETag == e.Placeholder.ETag);
-
-
-                    
-                        if (Directory.Exists(localOldFullPath))
+                        if (e.Placeholder.FileAttributes.HasFlag(FileAttributes.Directory))
                         {
-                            Directory.Move(localOldFullPath, localFullPath);
-                            //if (inSync) 
-                            //    localPlaceholder.SetInSyncState(CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_IN_SYNC);
-                        }
-                        else if (File.Exists(localOldFullPath))
-                        {
-                            File.Move(localOldFullPath, localFullPath);
-                            //if (inSync) 
-                            //    localPlaceholder.SetInSyncState(CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_IN_SYNC);
+                            await SyncDataAsync(SyncMode.Full, e.Placeholder.RelativeFileName);
                         }
                         else
                         {
                             await ChangedDataQueueBlock.SendAsync(localFullPath);
                         }
-
                         break;
+
+                    case WatcherChangeTypes.Renamed:
+                        var localOldFullPath = GetLocalFullPath(e.OldRelativePath);
+
+                        if (Directory.Exists(localOldFullPath))
+                        {
+                            Directory.Move(localOldFullPath, localFullPath);
+                        }
+                        else if (File.Exists(localOldFullPath))
+                        {
+                            File.Move(localOldFullPath, localFullPath);
+                        }
+                        else
+                        {
+                            await ChangedDataQueueBlock.SendAsync(localFullPath);
+                        }
+                        break;
+
                     case WatcherChangeTypes.Created:
                         await ChangedDataQueueBlock.SendAsync(localFullPath);
-
                         break;
+
                     case WatcherChangeTypes.Changed:
                         await ChangedDataQueueBlock.SendAsync(localFullPath);
-
                         break;
+
                     default:
                         await ChangedDataQueueBlock.SendAsync(GetLocalFullPath(e.Placeholder.RelativeFileName));
-
                         break;
+
                 }
             }
         }

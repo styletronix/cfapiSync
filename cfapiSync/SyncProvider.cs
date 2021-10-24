@@ -1,5 +1,6 @@
 ﻿using Styletronix.CloudSyncProvider;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -24,10 +25,9 @@ public partial class SyncProvider : IDisposable
     private readonly int chunkSize = 1024 * 1024 * 2; // 10MB chunkSize for File Download / Upload
     private readonly int stackSize = 1024 * 512; // Buffer size for P/Invoke Call to CFExecute max 1 MB
     private bool disposedValue;
-
+    private string[] fileExclusions = new string[] { @"Thumbs.db", @"Desktop.ini" };
 
     public CancellationToken GlobalShutDownToken => GlobalShutDownTokenSource.Token;
-
 
     public SyncProvider(SyncProviderParameters parameter)
     {
@@ -50,8 +50,6 @@ public partial class SyncProvider : IDisposable
         SyncContext.ServerProvider.ServerProviderStateChanged += ServerProvider_ServerProviderStateChanged;
         SyncContext.ServerProvider.FileChanged += ServerProvider_FileChanged;
     }
-
-
 
 
 
@@ -213,7 +211,7 @@ public partial class SyncProvider : IDisposable
             Styletronix.Debug.WriteLine(ex.Message, System.Diagnostics.TraceLevel.Error);
         }
 
-
+        // Old Implementation
         //try
         //{
         //    Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Classes\CLSID", true).DeleteSubKeyTree(this.SyncContext.SyncProviderParameter.ProviderInfo.CLSID, false);
@@ -319,18 +317,6 @@ public partial class SyncProvider : IDisposable
             new CF_CALLBACK_REGISTRATION {
                     Callback = new CF_CALLBACK(NOTIFY_RENAME_COMPLETION),
                     Type = CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_NOTIFY_RENAME_COMPLETION
-                } ,
-             new CF_CALLBACK_REGISTRATION {
-                    Callback = new CF_CALLBACK(NOTIFY_DEHYDRATE),
-                    Type = CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_NOTIFY_DEHYDRATE
-                } ,
-             new CF_CALLBACK_REGISTRATION {
-                    Callback = new CF_CALLBACK(NOTIFY_DEHYDRATE_COMPLETION),
-                    Type = CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_NOTIFY_DEHYDRATE_COMPLETION
-                } ,
-             new CF_CALLBACK_REGISTRATION {
-                    Callback = new CF_CALLBACK(VALIDATE_DATA),
-                    Type = CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_VALIDATE_DATA
                 } ,
            CF_CALLBACK_REGISTRATION.CF_CALLBACK_REGISTRATION_END
       };
@@ -445,7 +431,15 @@ public partial class SyncProvider : IDisposable
 
     #region "Monitor and handle local file changes"
     private ActionBlock<string> ChangedDataQueueBlock;
+    private readonly ConcurrentDictionary<string, FailedData> FailedDataQueue = new();
 
+    private class FailedData
+    {
+        public DateTime LastTry;
+        public DateTime NextTry;
+        public Exception LastException;
+        public int RetryCount;
+    }
     private void InitWatcher()
     {
         Styletronix.Debug.WriteLine("InitWatcher", System.Diagnostics.TraceLevel.Verbose);
@@ -503,6 +497,35 @@ public partial class SyncProvider : IDisposable
         catch (Exception ex)
         {
             Styletronix.Debug.WriteLine("TODO: Exception Handling required: " + path + " " + ex.Message, System.Diagnostics.TraceLevel.Error);
+
+
+            try
+            {
+                if (ex.HResult == -2147024533) //Damaged Meta Data
+                {
+                    using ExtendedPlaceholderState p = new(path);
+                    p.RevertPlaceholder(true);
+                }
+            }catch(Exception ex2)
+            {
+
+            }
+
+            FailedData failedData = new()
+            {
+                LastException = ex,
+                LastTry = DateTime.Now,
+                NextTry = DateTime.Now.AddSeconds(20),
+                RetryCount = 0
+            };
+
+            this.FailedDataQueue.AddOrUpdate(path, failedData, (key, current) =>
+            {
+                current.LastTry = failedData.LastTry;
+                current.NextTry = failedData.NextTry;
+                current.RetryCount += 1;
+                return current;
+            });
         }
     }
 
@@ -516,13 +539,20 @@ public partial class SyncProvider : IDisposable
         using ExtendedPlaceholderState localPlaceHolder = new(fullPath);
 
         // Convert to placeholder if required
-        if (!localPlaceHolder.ConvertToPlaceholder()) { throw new Exception("Convert to Placeholder failed"); };
+        if (!localPlaceHolder.ConvertToPlaceholder())
+            throw new Exception("Convert to Placeholder failed");
 
         // Ignore all Files in $Recycle.bin
         if (fullPath.Contains(@"$Recycle.bin"))
-        {
             localPlaceHolder.SetPinState(CF_PIN_STATE.CF_PIN_STATE_EXCLUDED);
-        }
+
+        // Ignore special files.
+        if (IsExcludedFile(fullPath))
+            localPlaceHolder.SetPinState(CF_PIN_STATE.CF_PIN_STATE_EXCLUDED);
+
+        // Ignor System and Temporary Files.
+        if (localPlaceHolder.Attributes.HasFlag(FileAttributes.System) || localPlaceHolder.Attributes.HasFlag(FileAttributes.Temporary))
+            localPlaceHolder.SetPinState(CF_PIN_STATE.CF_PIN_STATE_EXCLUDED);
 
 
         if (localPlaceHolder.PlaceholderInfoBasic.PinState == CF_PIN_STATE.CF_PIN_STATE_EXCLUDED)
@@ -678,6 +708,8 @@ public partial class SyncProvider : IDisposable
         {
             if (localPlaceHolder.PlaceholderInfoStandard.ModifiedDataSize == 0)
                 localPlaceHolder.SetInSyncState(CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_IN_SYNC).ThrowOnFailure();
+
+            //localPlaceHolder.RevertPlaceholder(true);
         }
     }
 

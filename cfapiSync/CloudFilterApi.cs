@@ -122,6 +122,10 @@ namespace Styletronix
                 {
                     ResultInfo = Marshal.PtrToStructure<CF_PLACEHOLDER_BASIC_INFO>(bufferPointerHandler);
                 }
+                else
+                {
+
+                }
             }
 
             return ResultInfo;

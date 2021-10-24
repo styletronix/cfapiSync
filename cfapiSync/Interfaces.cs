@@ -381,7 +381,6 @@ namespace Styletronix.CloudSyncProvider
     public class BasicSyncProviderInfo
     {
         public Guid ProviderId;
-        public string CLSID;
         public string ProviderName;
         public string ProviderVersion;
     }
