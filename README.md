@@ -1,7 +1,7 @@
 # cfapiSync
 Working c# Example implementig a Cloud Sync Engine on Windows 10 / 11 based on the  cloud files API.
 
-This is very early alpha...
+This is very early alpha... And also my very first project written entirely in c#.
 
 It uses the content of folder "d:\temp" as the server source and creates a OneDrive Style sync folder for the current user.
 
