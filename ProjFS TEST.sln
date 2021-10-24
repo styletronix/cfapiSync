@@ -3,7 +3,7 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.0.31717.71
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "cfapiSync", "ClassLibrary1\cfapiSync.csproj", "{B57BE1E4-3F7D-4A95-B6F8-857144695D74}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "cfapiSync", "cfapiSync\cfapiSync.csproj", "{B57BE1E4-3F7D-4A95-B6F8-857144695D74}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
