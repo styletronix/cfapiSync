@@ -8,8 +8,8 @@
     <ProjectGuid>{B57BE1E4-3F7D-4A95-B6F8-857144695D74}</ProjectGuid>
     <OutputType>WinExe</OutputType>
     <AppDesignerFolder>Properties</AppDesignerFolder>
-    <RootNamespace>ClassLibrary1</RootNamespace>
-    <AssemblyName>ClassLibrary1</AssemblyName>
+    <RootNamespace>cfapiSync</RootNamespace>
+    <AssemblyName>cfapiSync</AssemblyName>
     <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
     <Deterministic>true</Deterministic>
