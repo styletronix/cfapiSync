@@ -9,6 +9,9 @@ namespace ClassLibrary1
         public Form1()
         {
             InitializeComponent();
+
+            this.textBox_serverPath.Text = @"D:\TEMP";
+            this.textBox_localPath.Text = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) + @"\VirtualTest3";
         }
 
         private SyncProvider SyncProvider;
@@ -24,8 +27,8 @@ namespace ClassLibrary1
                     ProviderName = "SXTestProvider",
                     ProviderVersion = "0.0.1"
                 },
-                LocalDataPath = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) + @"\VirtualTest3",
-                ServerProvider = new ServerProvider(@"D:\TEMP")
+                LocalDataPath = this.textBox_localPath.Text,
+                ServerProvider = new ServerProvider(this.textBox_serverPath.Text)
             };
 
             SyncProvider = new SyncProvider(param);
@@ -62,6 +65,16 @@ namespace ClassLibrary1
         private async void Button6_Click(object sender, EventArgs e)
         {
             await SyncProvider.SyncDataAsync(SyncProvider.SyncMode.Full);
+        }
+
+        private void label1_Click(object sender, EventArgs e)
+        {
+
+        }
+
+        private void label2_Click(object sender, EventArgs e)
+        {
+
         }
     }
 }
