@@ -1,12 +1,5 @@
 ﻿using Styletronix.CloudSyncProvider;
 using System;
-using System.Collections.Generic;
-using System.ComponentModel;
-using System.Data;
-using System.Drawing;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace ClassLibrary1
@@ -18,12 +11,11 @@ namespace ClassLibrary1
             InitializeComponent();
         }
 
-        private SyncProvider _SyncProvider;
-        private System.Threading.CancellationTokenSource startCTX;
+        private SyncProvider SyncProvider;
 
         private void Form1_Load(object sender, EventArgs e)
         {
-            var param = new Styletronix.CloudSyncProvider.SyncProviderParameters()
+            var param = new SyncProviderParameters()
             {
                 ProviderInfo = new BasicSyncProviderInfo()
                 {
@@ -35,49 +27,41 @@ namespace ClassLibrary1
                 LocalDataPath = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) + @"\VirtualTest3",
                 ServerProvider = new ServerProvider(@"D:\TEMP")
             };
-            this._SyncProvider = new SyncProvider(param);
+
+            SyncProvider = new SyncProvider(param);
         }
 
-        private async void button1_Click(object sender, EventArgs e)
+        private async void Button1_Click(object sender, EventArgs e)
         {
-            if (startCTX != null) { startCTX.Cancel(); }
-            startCTX = new System.Threading.CancellationTokenSource();
-
-            await this._SyncProvider.Start(startCTX.Token);
+            this.button1.Enabled = false;
+            await SyncProvider.Start();
         }
-        private void button5_Click(object sender, EventArgs e)
+        private async void Button5_Click(object sender, EventArgs e)
         {
-            if (startCTX != null) { startCTX.Cancel(); }
-            this._SyncProvider.Stop();
+            this.button5.Enabled = false;
+            await SyncProvider.Stop();
         }
 
-        private async  void button2_Click(object sender, EventArgs e)
+        private async void Button2_Click(object sender, EventArgs e)
         {
-            if (startCTX != null) { startCTX.Cancel(); }
-
-           await  this._SyncProvider.RevertAllPlaceholders(new System.Threading.CancellationToken() );
+            this.button2.Enabled = false;
+            await SyncProvider.RevertAllPlaceholders();
         }
 
-        private void button3_Click(object sender, EventArgs e)
+        private async void Button3_Click(object sender, EventArgs e)
         {
-            if (startCTX != null) { startCTX.Cancel(); }
-            this._SyncProvider.Unregister();
+            this.button3.Enabled = false;
+            await SyncProvider.Unregister();
         }
 
-        private async void button4_Click(object sender, EventArgs e)
+        private async void Button4_Click(object sender, EventArgs e)
         {
-            using (var ctx = new System.Threading.CancellationTokenSource())
-            {
-                await this._SyncProvider.SyncDataAsync(SyncProvider.SyncMode.Local,ctx.Token);
-            }
+            await SyncProvider.SyncDataAsync(SyncProvider.SyncMode.Local);
         }
 
-        private async void button6_Click(object sender, EventArgs e)
+        private async void Button6_Click(object sender, EventArgs e)
         {
-            using (var ctx = new System.Threading.CancellationTokenSource())
-            {
-                await this._SyncProvider.SyncDataAsync(SyncProvider.SyncMode.Full, ctx.Token);
-            }
+            await SyncProvider.SyncDataAsync(SyncProvider.SyncMode.Full);
         }
     }
 }

@@ -18,8 +18,6 @@ namespace Styletronix
     public partial class CloudFilterApi
     {
 
-
-#pragma warning disable 1591
         /// <summary>
         /// NT status values
         /// </summary>

@@ -1,4 +1,6 @@
-﻿using System;
+﻿#nullable enable
+
+using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
@@ -15,11 +17,25 @@ public sealed class AutoResetEventAsync : IDisposable
     /// <returns>Task completed when the event is signaled.</returns>
     public async ValueTask WaitAsync()
     {
-        if (CheckSignaled()) return;
+        if (CheckSignaled())
+        {
+            return;
+        }
+
         SemaphoreSlim s;
-        lock (Q) Q.Enqueue(s = new(0, 1));
+        lock (Q)
+        {
+            Q.Enqueue(s = new(0, 1));
+        }
+
         await s.WaitAsync();
-        lock (Q) if (Q.Count > 0 && Q.Peek() == s) Q.Dequeue().Dispose();
+        lock (Q)
+        {
+            if (Q.Count > 0 && Q.Peek() == s)
+            {
+                Q.Dequeue().Dispose();
+            }
+        }
     }
 
     /// <summary>
@@ -30,11 +46,25 @@ public sealed class AutoResetEventAsync : IDisposable
     /// <returns>Task completed when the event is signaled or the time runs out.</returns>
     public async ValueTask WaitAsync(int millisecondsTimeout)
     {
-        if (CheckSignaled()) return;
+        if (CheckSignaled())
+        {
+            return;
+        }
+
         SemaphoreSlim s;
-        lock (Q) Q.Enqueue(s = new(0, 1));
+        lock (Q)
+        {
+            Q.Enqueue(s = new(0, 1));
+        }
+
         await s.WaitAsync(millisecondsTimeout);
-        lock (Q) if (Q.Count > 0 && Q.Peek() == s) Q.Dequeue().Dispose();
+        lock (Q)
+        {
+            if (Q.Count > 0 && Q.Peek() == s)
+            {
+                Q.Dequeue().Dispose();
+            }
+        }
     }
 
     /// <summary>
@@ -46,16 +76,30 @@ public sealed class AutoResetEventAsync : IDisposable
     /// <returns>Task completed when the event is signaled, the time runs out or the token is cancelled.</returns>
     public async ValueTask WaitAsync(int millisecondsTimeout, CancellationToken cancellationToken)
     {
-        if (CheckSignaled()) return;
+        if (CheckSignaled())
+        {
+            return;
+        }
+
         SemaphoreSlim s;
-        lock (Q) Q.Enqueue(s = new(0, 1));
+        lock (Q)
+        {
+            Q.Enqueue(s = new(0, 1));
+        }
+
         try
         {
             await s.WaitAsync(millisecondsTimeout, cancellationToken);
         }
         finally
         {
-            lock (Q) if (Q.Count > 0 && Q.Peek() == s) Q.Dequeue().Dispose();
+            lock (Q)
+            {
+                if (Q.Count > 0 && Q.Peek() == s)
+                {
+                    Q.Dequeue().Dispose();
+                }
+            }
         }
     }
 
@@ -66,16 +110,30 @@ public sealed class AutoResetEventAsync : IDisposable
     /// <returns>Task completed when the event is signaled or the token is cancelled.</returns>
     public async ValueTask WaitAsync(CancellationToken cancellationToken)
     {
-        if (CheckSignaled()) return;
+        if (CheckSignaled())
+        {
+            return;
+        }
+
         SemaphoreSlim s;
-        lock (Q) Q.Enqueue(s = new(0, 1));
+        lock (Q)
+        {
+            Q.Enqueue(s = new(0, 1));
+        }
+
         try
         {
             await s.WaitAsync(cancellationToken);
         }
         finally
         {
-            lock (Q) if (Q.Count > 0 && Q.Peek() == s) Q.Dequeue().Dispose();
+            lock (Q)
+            {
+                if (Q.Count > 0 && Q.Peek() == s)
+                {
+                    Q.Dequeue().Dispose();
+                }
+            }
         }
     }
 
@@ -88,11 +146,25 @@ public sealed class AutoResetEventAsync : IDisposable
     /// <returns>Task completed when the event is signaled or the time runs out.</returns>
     public async ValueTask WaitAsync(TimeSpan timeout)
     {
-        if (CheckSignaled()) return;
+        if (CheckSignaled())
+        {
+            return;
+        }
+
         SemaphoreSlim s;
-        lock (Q) Q.Enqueue(s = new(0, 1));
+        lock (Q)
+        {
+            Q.Enqueue(s = new(0, 1));
+        }
+
         await s.WaitAsync(timeout);
-        lock (Q) if (Q.Count > 0 && Q.Peek() == s) Q.Dequeue().Dispose();
+        lock (Q)
+        {
+            if (Q.Count > 0 && Q.Peek() == s)
+            {
+                Q.Dequeue().Dispose();
+            }
+        }
     }
 
     /// <summary>
@@ -105,16 +177,30 @@ public sealed class AutoResetEventAsync : IDisposable
     /// <returns>Task completed when the event is signaled, the time runs out or the token is cancelled.</returns>
     public async ValueTask WaitAsync(TimeSpan timeout, CancellationToken cancellationToken)
     {
-        if (CheckSignaled()) return;
+        if (CheckSignaled())
+        {
+            return;
+        }
+
         SemaphoreSlim s;
-        lock (Q) Q.Enqueue(s = new(0, 1));
+        lock (Q)
+        {
+            Q.Enqueue(s = new(0, 1));
+        }
+
         try
         {
             await s.WaitAsync(timeout, cancellationToken);
         }
         finally
         {
-            lock (Q) if (Q.Count > 0 && Q.Peek() == s) Q.Dequeue().Dispose();
+            lock (Q)
+            {
+                if (Q.Count > 0 && Q.Peek() == s)
+                {
+                    Q.Dequeue().Dispose();
+                }
+            }
         }
     }
 
@@ -126,8 +212,14 @@ public sealed class AutoResetEventAsync : IDisposable
         SemaphoreSlim? toRelease = null;
         lock (Q)
         {
-            if (Q.Count > 0) toRelease = Q.Dequeue();
-            else if (!IsSignaled) IsSignaled = true;
+            if (Q.Count > 0)
+            {
+                toRelease = Q.Dequeue();
+            }
+            else if (!IsSignaled)
+            {
+                IsSignaled = true;
+            }
         }
         toRelease?.Release();
     }
@@ -135,7 +227,10 @@ public sealed class AutoResetEventAsync : IDisposable
     /// <summary>
     /// Sets the state of the event to non nonsignaled, making the waiting tasks to wait.
     /// </summary>
-    public void Reset() => IsSignaled = false;
+    public void Reset()
+    {
+        IsSignaled = false;
+    }
 
     /// <summary>
     /// Disposes any semaphores left in the queue.
@@ -144,7 +239,10 @@ public sealed class AutoResetEventAsync : IDisposable
     {
         lock (Q)
         {
-            while (Q.Count > 0) Q.Dequeue().Dispose();
+            while (Q.Count > 0)
+            {
+                Q.Dequeue().Dispose();
+            }
         }
     }
 

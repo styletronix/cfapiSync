@@ -3,10 +3,28 @@ using System;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using static Styletronix.CloudFilterApi;
 
 public class ServerProvider : IServerFileProvider
 {
-    #region "Server Parameter"
+    public ServerProvider(string ServerPath)
+    {
+        Parameter = new ServerProviderParams()
+        {
+            ServerPath = ServerPath,
+            UseRecycleBin = true,
+            UseRecycleBinForChangedFiles = true,
+            UseTempFilesForUpload = true
+        };
+    }
+
+    public event EventHandler<ServerProviderStateChangedEventArgs> ServerProviderStateChanged;
+    public event EventHandler<FileChangedEventArgs> FileChanged;
+
+    public SyncProviderUtils.SyncContext SyncContext { get; set; }
+    private readonly ServerProviderParams Parameter;
+    private ServerProviderStatus lastStatus = ServerProviderStatus.Disconnected;
+    private ServerCallback serverCallback;
 
     public class ServerProviderParams
     {
@@ -15,41 +33,48 @@ public class ServerProvider : IServerFileProvider
         public bool UseRecycleBinForChangedFiles;
         public bool UseTempFilesForUpload;
     }
-    internal ServerProviderParams Parameter;
 
-    public ServerProvider(string ServerPath)
+    public Task<GenericResult> Connect()
     {
-        this.Parameter = new ServerProviderParams()
-        {
-            ServerPath = ServerPath,
-            UseRecycleBin = true,
-            UseRecycleBinForChangedFiles = true,
-            UseTempFilesForUpload = true
-        };
-
-        if (System.IO.Directory.Exists(this.Parameter.ServerPath) == false) { System.IO.Directory.CreateDirectory(this.Parameter.ServerPath); };
-    }
-
-    #endregion
-
-
-    #region "IHandleServerFiles"
-
-    public SyncProviderUtils.SyncContext SyncContext { get; set; }
-
-    public IReadFileAsync GetNewReadFile() => new ReadFileAsyncInternal(this);
-
-    public IWriteFileAsync GetNewWriteFile() => new WriteFileAsyncInternal(this);
-
-    public IFileListAsync GetNewFileList() => new FileListAsyncInternal(this);
-
-    public Task<DeleteFileResult> DeleteFileAsync(string RelativeFileName, bool isDirectory)
-    {
-        DeleteFileResult deleteFileResult = new();
+        var genericResult = new GenericResult();
 
         try
         {
-            this.DeleteOrMoveToRecycleBin(RelativeFileName, isDirectory);
+            if (!Directory.Exists(Parameter.ServerPath)) { Directory.CreateDirectory(Parameter.ServerPath); };
+        }
+        catch (Exception) { }
+
+        if (!this.CheckProviderStatus())
+            genericResult.Status = NtStatus.STATUS_CLOUD_FILE_NETWORK_UNAVAILABLE;
+
+        serverCallback = new ServerCallback(this);
+
+        return Task.FromResult(genericResult);
+    }
+
+    public Task<GenericResult> Disconnect()
+    {
+        var genericResult = new GenericResult();
+
+        serverCallback?.Dispose();
+
+        return Task.FromResult(genericResult);
+    }
+
+
+
+    public IReadFileAsync GetNewReadFile() { return new ReadFileAsyncInternal(this); }
+    public IWriteFileAsync GetNewWriteFile() { return new WriteFileAsyncInternal(this); }
+    public IFileListAsync GetNewFileList() { return new FileListAsyncInternal(this); }
+
+
+    public Task<DeleteFileResult> DeleteFileAsync(string RelativeFileName, bool isDirectory)
+    {
+        var deleteFileResult = new DeleteFileResult();
+
+        try
+        {
+            DeleteOrMoveToRecycleBin(RelativeFileName, isDirectory);
         }
         catch (DirectoryNotFoundException ex)
         {
@@ -68,15 +93,12 @@ public class ServerProvider : IServerFileProvider
 
         return Task.FromResult(deleteFileResult);
     }
-
-
-
     public Task<MoveFileResult> MoveFileAsync(string RelativeFileName, string RelativeDestination, bool isDirectory)
     {
-        var fullPath = Path.Combine(this.Parameter.ServerPath, RelativeFileName);
-        var fullPathDestination = Path.Combine(this.Parameter.ServerPath, RelativeDestination);
+        string fullPath = Path.Combine(Parameter.ServerPath, RelativeFileName);
+        string fullPathDestination = Path.Combine(Parameter.ServerPath, RelativeDestination);
 
-        MoveFileResult moveFileResult = new();
+        var moveFileResult = new MoveFileResult();
 
         try
         {
@@ -96,22 +118,23 @@ public class ServerProvider : IServerFileProvider
 
         return Task.FromResult(moveFileResult);
     }
-
     public Task<GetFileInfoResult> GetFileInfo(string RelativeFileName, bool isDirectory)
     {
-        GetFileInfoResult getFileInfoResult = new();
+        var getFileInfoResult = new GetFileInfoResult();
 
-        var fullPath = Path.Combine(this.Parameter.ServerPath, RelativeFileName);
+        string fullPath = Path.Combine(Parameter.ServerPath, RelativeFileName);
 
         try
         {
             if (isDirectory)
             {
-                if (!Directory.Exists(fullPath)) { throw new DirectoryNotFoundException(RelativeFileName); }
+                if (!Directory.Exists(fullPath))
+                    return Task.FromResult(new GetFileInfoResult(NtStatus.STATUS_NOT_A_CLOUD_FILE));
             }
             else
             {
-                if (!File.Exists(fullPath)) { throw new FileNotFoundException(RelativeFileName); }
+                if (!File.Exists(fullPath))
+                    return Task.FromResult(new GetFileInfoResult(NtStatus.STATUS_NOT_A_CLOUD_FILE));
             }
 
             getFileInfoResult.Placeholder = new Placeholder(fullPath);
@@ -123,18 +146,18 @@ public class ServerProvider : IServerFileProvider
 
         return Task.FromResult(getFileInfoResult);
     }
-
     public Task<CreateFileResult> CreateFileAsync(string RelativeFileName, bool isDirectory)
     {
-        CreateFileResult createFileResult = new();
+        var createFileResult = new CreateFileResult();
 
-        var fullPath = Path.Combine(this.Parameter.ServerPath, RelativeFileName);
+        string fullPath = Path.Combine(Parameter.ServerPath, RelativeFileName);
 
         try
         {
             if (isDirectory)
             {
-                Directory.CreateDirectory(fullPath);
+                if(!Directory.Exists(fullPath))
+                    Directory.CreateDirectory(fullPath);
             }
             else
             {
@@ -160,14 +183,12 @@ public class ServerProvider : IServerFileProvider
 
         return Task.FromResult(createFileResult);
     }
-    #endregion
-
 
 
     internal void MoveToRecycleBin(string relativePath, bool isDirectory)
     {
-        string recyclePath = this.Parameter.ServerPath + @"\$Recycle.bin\" + relativePath;
-        string fullPath = this.Parameter.ServerPath + @"\" + relativePath;
+        string recyclePath = Parameter.ServerPath + @"\$Recycle.bin\" + relativePath;
+        string fullPath = Parameter.ServerPath + @"\" + relativePath;
 
         recyclePath = Path.GetDirectoryName(recyclePath) + @"\(" + DateTime.Now.ToString("s").Replace(":", "_") + ") " + Path.GetFileName(recyclePath);
 
@@ -175,22 +196,24 @@ public class ServerProvider : IServerFileProvider
 
         if (isDirectory)
         {
-            Directory.Move(fullPath, recyclePath);
+            if (Directory.Exists(fullPath))
+                Directory.Move(fullPath, recyclePath);
         }
         else
         {
-            File.Move(fullPath, recyclePath);
+            if (File.Exists(fullPath))
+                File.Move(fullPath, recyclePath);
         }
     }
     internal void DeleteOrMoveToRecycleBin(string relativePath, bool isDirectory)
     {
-        if (this.Parameter.UseRecycleBin)
+        if (Parameter.UseRecycleBin)
         {
             MoveToRecycleBin(relativePath, isDirectory);
         }
         else
         {
-            string fullPath = Path.Combine(this.Parameter.ServerPath, relativePath);
+            string fullPath = Path.Combine(Parameter.ServerPath, relativePath);
             if (isDirectory)
             {
                 Directory.Delete(fullPath, false);
@@ -202,26 +225,63 @@ public class ServerProvider : IServerFileProvider
         }
     }
 
+    internal bool CheckProviderStatus()
+    {
+        // Emulate "Disconnected / Offline" if ServerPath not found
+        var isOnline = Directory.Exists(this.Parameter.ServerPath);
+
+        this.SetProviderStatus(isOnline ? ServerProviderStatus.Connected : ServerProviderStatus.Disconnected);
+
+        return isOnline;
+    }
+    internal void SetProviderStatus(ServerProviderStatus status)
+    {
+        if (this.lastStatus != status)
+        {
+            this.RaiseServerProviderStateChanged(new ServerProviderStateChangedEventArgs(status));
+            this.lastStatus = status;
+        }
+    }
+    internal string GetRelativePath(string fullPath)
+    {
+        if (!fullPath.StartsWith(this.Parameter.ServerPath, StringComparison.CurrentCultureIgnoreCase)) throw new Exception("File not part of Sync Root");
+        if (fullPath.Length == this.Parameter.ServerPath.Length) return "";
+
+        return fullPath.Remove(0, this.Parameter.ServerPath.Length + 1);
+    }
+
+    protected virtual void RaiseServerProviderStateChanged(ServerProviderStateChangedEventArgs e)
+    {
+        this.ServerProviderStateChanged?.Invoke(this, e);
+    }
+    protected virtual void RaiseFileChanged(FileChangedEventArgs e)
+    {
+        this.FileChanged?.Invoke(this, e);
+    }
+
 
     internal class ReadFileAsyncInternal : IReadFileAsync
     {
-        private ServerProvider Provider;
+        private readonly ServerProvider provider;
         private FileStream fileStream;
-        private OpenAsyncParams _Params;
+        private OpenAsyncParams openAsyncParams;
         public ReadFileAsyncInternal(ServerProvider provider)
         {
-            this.Provider = provider;
+            this.provider = provider;
         }
 
         public Task<ReadFileOpenResult> OpenAsync(OpenAsyncParams e)
         {
-            this._Params = e;
-            ReadFileOpenResult openResult = new();
+            if (!this.provider.CheckProviderStatus())
+                return Task.FromResult(new ReadFileOpenResult(NtStatus.STATUS_CLOUD_FILE_NETWORK_UNAVAILABLE));
 
-            var fullPath = Path.Combine(this.Provider.Parameter.ServerPath, e.RelativeFileName);
+            openAsyncParams = e;
+            var openResult = new ReadFileOpenResult();
+
+            string fullPath = Path.Combine(this.provider.Parameter.ServerPath, e.RelativeFileName);
 
             // Simulate "Offline" if Serverfolder not found.
-            if (!Directory.Exists(this.Provider.Parameter.ServerPath))
+            if (!Directory.Exists(this.provider.Parameter.ServerPath))
             {
                 openResult.SetException(CloudExceptions.Offline);
                 goto skip;
@@ -231,7 +291,7 @@ public class ServerProvider : IServerFileProvider
             {
                 if (!File.Exists(fullPath)) { throw new FileNotFoundException(e.RelativeFileName); }
 
-                this.fileStream = File.OpenRead(fullPath);
+                fileStream = File.OpenRead(fullPath);
                 openResult.Placeholder = new(fullPath);
             }
             catch (Exception ex)
@@ -245,12 +305,15 @@ public class ServerProvider : IServerFileProvider
 
         public async Task<ReadFileReadResult> ReadAsync(byte[] buffer, int offsetBuffer, long offset, int count)
         {
-            ReadFileReadResult readResult = new();
+            if (!this.provider.CheckProviderStatus())
+                return new ReadFileReadResult(NtStatus.STATUS_CLOUD_FILE_NETWORK_UNAVAILABLE);
+
+            var readResult = new ReadFileReadResult();
 
             try
             {
                 fileStream.Position = offset;
-                readResult.BytesRead = await fileStream.ReadAsync(buffer, offsetBuffer, count, this._Params.CancellationToken);
+                readResult.BytesRead = await fileStream.ReadAsync(buffer, offsetBuffer, count, this.openAsyncParams.CancellationToken);
             }
             catch (Exception ex)
             {
@@ -262,12 +325,12 @@ public class ServerProvider : IServerFileProvider
 
         public Task<ReadFileCloseResult> CloseAsync()
         {
-            ReadFileCloseResult closeResult = new();
+            var closeResult = new ReadFileCloseResult();
 
             try
             {
                 fileStream.Close();
-                this.isClosed = true;
+                isClosed = true;
             }
             catch (Exception ex)
             {
@@ -290,16 +353,16 @@ public class ServerProvider : IServerFileProvider
                 {
                     try
                     {
-                        if (!this.isClosed)
+                        if (!isClosed)
                         {
-                            this.isClosed = true;
-                            this.fileStream?.Flush();
-                            this.fileStream?.Close();
+                            isClosed = true;
+                            fileStream?.Flush();
+                            fileStream?.Close();
                         }
                     }
                     finally
                     {
-                        this.fileStream?.Dispose();
+                        fileStream?.Dispose();
                     }
                 }
                 disposedValue = true;
@@ -320,20 +383,20 @@ public class ServerProvider : IServerFileProvider
             GC.SuppressFinalize(this);
         }
 
-        protected async virtual ValueTask DisposeAsyncCore()
+        protected virtual async ValueTask DisposeAsyncCore()
         {
             try
             {
-                if (!this.isClosed)
+                if (!isClosed)
                 {
-                    this.isClosed = true;
-                    await this.fileStream?.FlushAsync();
-                    this.fileStream?.Close();
+                    isClosed = true;
+                    await fileStream?.FlushAsync();
+                    fileStream?.Close();
                 }
             }
             finally
             {
-                this.fileStream?.Dispose();
+                fileStream?.Dispose();
             }
         }
         public async ValueTask DisposeAsync()
@@ -345,51 +408,45 @@ public class ServerProvider : IServerFileProvider
         }
         #endregion
     }
-
-
     internal class WriteFileAsyncInternal : IWriteFileAsync
     {
         private OpenAsyncParams param;
-        private readonly ServerProvider Provider;
+        private readonly ServerProvider provider;
         private FileStream fileStream;
         private string fullPath;
         private string tempFile;
-        private bool useTempFile;
 
         public WriteFileAsyncInternal(ServerProvider provider)
         {
-            this.Provider = provider;
-            this.useTempFile = provider.Parameter.UseTempFilesForUpload;
+            this.provider = provider;
         }
 
-        public UploadMode SupportedUploadModes
-        {
-            get
-            {
+        public UploadMode SupportedUploadModes =>
                 // Resume currently not implemented (Verification of file integrity not implemented)
-                return UploadMode.FullFile | UploadMode.PartialUpdate;
-            }
-        }
+                UploadMode.FullFile | UploadMode.PartialUpdate;
         public Task<WriteFileOpenResult> OpenAsync(OpenAsyncParams e)
         {
-            this.param = e;
-            WriteFileOpenResult openResult = new();
+            if (!this.provider.CheckProviderStatus())
+                return Task.FromResult(new WriteFileOpenResult(NtStatus.STATUS_CLOUD_FILE_NETWORK_UNAVAILABLE));
+
+            param = e;
+            var openResult = new WriteFileOpenResult();
 
             // PartialUpdate is done In-Place without temp file.
-            if (e.mode == UploadMode.PartialUpdate) { this.useTempFile = false; }
+            if (e.mode == UploadMode.PartialUpdate) { this.provider.Parameter.UseTempFilesForUpload = false; }
 
             try
             {
-                this.fullPath = Path.Combine(this.Provider.Parameter.ServerPath, this.param.RelativeFileName);
+                fullPath = Path.Combine(this.provider.Parameter.ServerPath, param.RelativeFileName);
 
                 if (!Directory.Exists(Path.GetDirectoryName(fullPath)))
                 {
                     Directory.CreateDirectory(Path.GetDirectoryName(fullPath));
                 }
 
-                tempFile = Path.GetDirectoryName(this.fullPath) + @"\$_" + Path.GetFileName(fullPath);
+                tempFile = Path.GetDirectoryName(fullPath) + @"\$_" + Path.GetFileName(fullPath);
 
-                FileMode fileMode = this.param.mode switch
+                var fileMode = param.mode switch
                 {
                     UploadMode.FullFile => FileMode.Create,
                     UploadMode.Resume => FileMode.Open,
@@ -399,17 +456,17 @@ public class ServerProvider : IServerFileProvider
 
                 // Resume currently not implemented (Verification of file integrity not implemented)
 
-                if (this.useTempFile)
+                if (this.provider.Parameter.UseTempFilesForUpload)
                 {
-                    this.fileStream = new FileStream(tempFile, fileMode, FileAccess.Write, FileShare.None);
+                    fileStream = new FileStream(tempFile, fileMode, FileAccess.Write, FileShare.None);
                 }
                 else
                 {
-                    this.fileStream = new FileStream(fullPath, fileMode, FileAccess.Write, FileShare.None);
+                    fileStream = new FileStream(fullPath, fileMode, FileAccess.Write, FileShare.None);
                 }
 
 
-                this.fileStream.SetLength(e.FileInfo.FileSize);
+                fileStream.SetLength(e.FileInfo.FileSize);
                 if (File.Exists(fullPath))
                 {
                     openResult.Placeholder = new(fullPath);
@@ -425,12 +482,12 @@ public class ServerProvider : IServerFileProvider
 
         public async Task<WriteFileWriteResult> WriteAsync(byte[] buffer, int offsetBuffer, long offset, int count)
         {
-            WriteFileWriteResult writeResult = new();
+            var writeResult = new WriteFileWriteResult();
 
             try
             {
                 fileStream.Position = offset;
-                await fileStream.WriteAsync(buffer, offsetBuffer, count, this.param.CancellationToken);
+                await fileStream.WriteAsync(buffer, offsetBuffer, count, param.CancellationToken);
             }
             catch (Exception ex)
             {
@@ -442,21 +499,22 @@ public class ServerProvider : IServerFileProvider
 
         public async Task<WriteFileCloseResult> CloseAsync(bool isCompleted)
         {
-            WriteFileCloseResult closeResult = new();
+            var closeResult = new WriteFileCloseResult();
 
             try
             {
                 await fileStream.FlushAsync();
                 fileStream.Close();
-                this.isClosed = true;
+                isClosed = true;
 
-                var pFile = this.fullPath;
-                if (this.useTempFile) pFile = this.tempFile;
+                string pFile = fullPath;
+                if (this.provider.Parameter.UseTempFilesForUpload)
+                    pFile = tempFile;
 
                 try
                 {
-                    if (this.param.FileInfo.FileAttributes > 0) { File.SetAttributes(pFile, this.param.FileInfo.FileAttributes); }
-                    if (this.param.FileInfo.CreationTime > DateTime.MinValue) { File.SetCreationTime(pFile, this.param.FileInfo.CreationTime); }
+                    if (param.FileInfo.FileAttributes > 0) { File.SetAttributes(pFile, param.FileInfo.FileAttributes); }
+                    if (param.FileInfo.CreationTime > DateTime.MinValue) { File.SetCreationTime(pFile, param.FileInfo.CreationTime); }
                     //if (this.param.FileInfo.LastAccessTime > DateTime.MinValue) { File.SetLastAccessTime(pFile, this.param.FileInfo.LastAccessTime); }
                     //if (this._Params.FileInfo.LastWriteTime > DateTime.MinValue) { File.SetLastWriteTime(pFile, this._Params.FileInfo.LastWriteTime); }
                 }
@@ -467,24 +525,24 @@ public class ServerProvider : IServerFileProvider
 
                 if (isCompleted)
                 {
-                    if (this.useTempFile)
+                    if (this.provider.Parameter.UseTempFilesForUpload)
                     {
-                        if (File.Exists(this.fullPath))
+                        if (File.Exists(fullPath))
                         {
-                            if (this.Provider.Parameter.UseRecycleBinForChangedFiles)
+                            if (this.provider.Parameter.UseRecycleBinForChangedFiles)
                             {
-                                this.Provider.MoveToRecycleBin(this.param.RelativeFileName, false);
+                                this.provider.MoveToRecycleBin(param.RelativeFileName, false);
                             }
                             else
                             {
-                                File.Delete(this.fullPath);
+                                File.Delete(fullPath);
                             }
                         }
 
-                        File.Move(this.tempFile, this.fullPath);
+                        File.Move(tempFile, fullPath);
                     }
 
-                    closeResult.Placeholder = new(this.fullPath);
+                    closeResult.Placeholder = new(fullPath);
                 }
             }
             catch (Exception ex)
@@ -506,17 +564,17 @@ public class ServerProvider : IServerFileProvider
                 {
                     try
                     {
-                        if (!this.isClosed)
+                        if (!isClosed)
                         {
-                            this.isClosed = true;
+                            isClosed = true;
 
-                            this.fileStream?.Flush();
-                            this.fileStream?.Close();
+                            fileStream?.Flush();
+                            fileStream?.Close();
                         }
                     }
                     finally
                     {
-                        this.fileStream?.Dispose();
+                        fileStream?.Dispose();
                     }
                 }
                 disposedValue = true;
@@ -537,20 +595,20 @@ public class ServerProvider : IServerFileProvider
             GC.SuppressFinalize(this);
         }
 
-        protected async virtual ValueTask DisposeAsyncCore()
+        protected virtual async ValueTask DisposeAsyncCore()
         {
             try
             {
-                if (!this.isClosed)
+                if (!isClosed)
                 {
-                    this.isClosed = true;
-                    await this.fileStream?.FlushAsync();
-                    this.fileStream?.Close();
+                    isClosed = true;
+                    await fileStream?.FlushAsync();
+                    fileStream?.Close();
                 }
             }
             finally
             {
-                this.fileStream?.Dispose();
+                fileStream?.Dispose();
             }
         }
         public async ValueTask DisposeAsync()
@@ -562,48 +620,48 @@ public class ServerProvider : IServerFileProvider
         }
         #endregion
     }
-
     internal class FileListAsyncInternal : IFileListAsync
     {
-        private readonly ServerProvider Provider;
-        private CancellationTokenSource ctx;
-        private Placeholder current;
-        private Task enumTask;
-        private System.Collections.Concurrent.BlockingCollection<Placeholder> infoList;
+        private readonly ServerProvider provider;
+        private readonly CancellationTokenSource ctx = new();
+        private readonly System.Collections.Concurrent.BlockingCollection<Placeholder> infoList = new();
+        private readonly GenericResult finalStatus = new();
 
         public FileListAsyncInternal(ServerProvider provider)
         {
-            this.Provider = provider;
+            this.provider = provider;
         }
 
-        public Task OpenAsync(string RelativeFileName, CancellationToken cancellationToken)
+        public Task<GenericResult> OpenAsync(string relativeFileName, CancellationToken cancellationToken)
         {
-            this.ctx = new CancellationTokenSource();
-            var fullPath = Path.Combine(this.Provider.Parameter.ServerPath, RelativeFileName);
+            if (!provider.CheckProviderStatus())
+                return Task.FromResult(new GenericResult(NtStatus.STATUS_CLOUD_FILE_NETWORK_UNAVAILABLE));
 
-            this.infoList = new System.Collections.Concurrent.BlockingCollection<Placeholder>();
+            var fullPath = Path.Combine(provider.Parameter.ServerPath, relativeFileName);
 
-            cancellationToken.Register(() => { this.ctx.Cancel(); });
+            cancellationToken.Register(() => { ctx.Cancel(); });
+            var tctx = ctx.Token;
 
+            var directory = new DirectoryInfo(fullPath);
 
-            this.enumTask = Task.Run(() =>
+            if (!directory.Exists)
+                return Task.FromResult(new GenericResult(NtStatus.STATUS_NOT_A_CLOUD_FILE));
+
+            Task.Run(() =>
             {
-                var tctx = ctx.Token;
-                var di = new DirectoryInfo(fullPath);
-
                 try
                 {
-                    if (di.Exists)
+                    foreach (var fileSystemInfo in directory.EnumerateFileSystemInfos())
                     {
-                        foreach (var fi in di.EnumerateFileSystemInfos())
-                        {
-                            tctx.ThrowIfCancellationRequested();
-                            if (!fi.Name.StartsWith(@"$"))
-                            {
-                                infoList.Add(new Placeholder(fi));
-                            }
-                        }
+                        tctx.ThrowIfCancellationRequested();
+
+                        if (!fileSystemInfo.Name.StartsWith(@"$"))
+                            infoList.Add(new Placeholder(fileSystemInfo));
                     }
+                }
+                catch (Exception ex)
+                {
+                    this.finalStatus.SetException(ex);
                 }
                 finally
                 {
@@ -613,32 +671,52 @@ public class ServerProvider : IServerFileProvider
 
 
             // Open completed.... Itterating is running in Background.
-            return Task.CompletedTask;
+            return Task.FromResult(new GenericResult());
         }
-        public Task<bool> MoveNextAsync()
+        public Task<GetNextResult> GetNextAsync()
         {
-            var t = this.ctx.Token;
+            return Task.Run(GetNextResult () =>
+            {
+                var getNextResult = new GetNextResult();
 
-            return Task.Run(() =>
-            {
-                return this.infoList.TryTake(out this.current, -1, t);
-            }, t);
+                try
+                {
+                    if (!provider.CheckProviderStatus())
+                        return new GetNextResult(NtStatus.STATUS_CLOUD_FILE_NETWORK_UNAVAILABLE);
+
+                    if (infoList.TryTake(out Placeholder item, -1, ctx.Token))
+                    {
+                        // STATUS_SUCCESS = Data found
+                        getNextResult.Status = Styletronix.CloudFilterApi.NtStatus.STATUS_SUCCESS;
+                        getNextResult.Placeholder = item;
+                    }
+                    else
+                    {
+                        // STATUS_UNSUCCESSFUL = No more Data available.
+                        getNextResult.Status = Styletronix.CloudFilterApi.NtStatus.STATUS_UNSUCCESSFUL;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    getNextResult.SetException(ex);
+                    this.finalStatus.SetException(ex);
+                }
+
+                return getNextResult;
+            });
         }
-        public Placeholder Current
+        public Task<GenericResult> CloseAsync()
         {
-            get
+            ctx.Cancel();
+            if (!infoList.IsAddingCompleted)
             {
-                return this.current;
+                infoList.CompleteAdding();
+                this.finalStatus.Status = Styletronix.CloudFilterApi.NtStatus.STATUS_CLOUD_FILE_REQUEST_ABORTED;
             }
-        }
 
-        public Task CloseAsync()
-        {
-            this.ctx.Cancel();
-            this.infoList.CompleteAdding();
-            this.closed = true;
+            closed = true;
 
-            return Task.CompletedTask;
+            return Task.FromResult(this.finalStatus);
         }
 
         #region "Dispose"
@@ -652,7 +730,8 @@ public class ServerProvider : IServerFileProvider
             {
                 if (disposing)
                 {
-
+                    this.ctx?.Cancel();
+                    this.infoList?.Dispose();
                 }
                 disposedValue = true;
             }
@@ -672,12 +751,14 @@ public class ServerProvider : IServerFileProvider
             GC.SuppressFinalize(this);
         }
 
-        protected async virtual ValueTask DisposeAsyncCore()
+        protected virtual async ValueTask DisposeAsyncCore()
         {
-            if (!this.closed)
+            if (!closed)
+            {
                 await CloseAsync();
+            }
 
-            this.infoList?.Dispose();
+            infoList?.Dispose();
         }
         public async ValueTask DisposeAsync()
         {
@@ -687,5 +768,181 @@ public class ServerProvider : IServerFileProvider
             GC.SuppressFinalize(this);
         }
         #endregion
+    }
+    internal class ServerCallback : IDisposable
+    {
+        internal FileSystemWatcher fileSystemWatcher;
+        internal ServerProvider serverProvider;
+        internal bool disposedValue;
+        internal readonly System.Threading.Tasks.Dataflow.ActionBlock<FileChangedEventArgs> fileChangedActionBlock;
+
+        public ServerCallback(ServerProvider serverProvider)
+        {
+            this.serverProvider = serverProvider;
+
+            this.fileChangedActionBlock = new(data => serverProvider.RaiseFileChanged(data));
+
+            fileSystemWatcher = new FileSystemWatcher
+            {
+                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.DirectoryName | NotifyFilters.FileName | NotifyFilters.Size | NotifyFilters.Attributes,
+                Filter = "*",
+                IncludeSubdirectories = true,
+                Path = serverProvider.Parameter.ServerPath
+            };
+            fileSystemWatcher.Created += FileSystemWatcher_Created;
+            fileSystemWatcher.Deleted += FileSystemWatcher_Deleted;
+            fileSystemWatcher.Renamed += FileSystemWatcher_Renamed;
+            fileSystemWatcher.Changed += FileSystemWatcher_Changed;
+            fileSystemWatcher.Error += FileSystemWatcher_Error;
+            fileSystemWatcher.EnableRaisingEvents = true;
+        }
+
+
+        private void FileSystemWatcher_Error(object sender, ErrorEventArgs e)
+        {
+            try
+            {
+                fileChangedActionBlock.Post(new FileChangedEventArgs()
+                {
+                    ChangeType = WatcherChangeTypes.All,
+                    ResyncSubDirectories = true,
+                    Placeholder = new(serverProvider.Parameter.ServerPath, serverProvider.GetRelativePath(serverProvider.Parameter.ServerPath))
+                });
+            }
+            catch (Exception ex)
+            {
+                Styletronix.Debug.WriteLine(ex.Message, System.Diagnostics.TraceLevel.Error);
+            }
+        }
+
+        private void FileSystemWatcher_Changed(object sender, FileSystemEventArgs e)
+        {
+            if (e.FullPath.Contains(@"$Recycle.bin")) return;
+
+            try
+            {
+                fileChangedActionBlock.Post(new FileChangedEventArgs()
+                {
+                    ChangeType = WatcherChangeTypes.Changed,
+                    ResyncSubDirectories = false,
+                    Placeholder = new(e.FullPath, serverProvider.GetRelativePath(e.FullPath))
+                });
+            }
+            catch (Exception ex)
+            {
+                Styletronix.Debug.WriteLine(ex.Message, System.Diagnostics.TraceLevel.Error);
+            }
+        }
+
+        private void FileSystemWatcher_Renamed(object sender, RenamedEventArgs e)
+        {
+            if (e.FullPath.Contains(@"$Recycle.bin") && e.OldFullPath.Contains(@"$Recycle.bin")) return;
+
+            try
+            {
+                if (e.FullPath.Contains(@"$Recycle.bin"))
+                {
+                    fileChangedActionBlock.Post(new FileChangedEventArgs()
+                    {
+                        ChangeType = WatcherChangeTypes.Deleted,
+                        Placeholder = new(serverProvider.GetRelativePath(e.OldFullPath), false)
+                    });
+                }
+                else if (e.OldFullPath.Contains(@"$Recycle.bin"))
+                {
+                    fileChangedActionBlock.Post(new FileChangedEventArgs()
+                    {
+                        ChangeType = WatcherChangeTypes.Created,
+                        Placeholder = new(serverProvider.GetRelativePath(e.FullPath), false)
+                    });
+                }
+                else
+                {
+                    fileChangedActionBlock.Post(new FileChangedEventArgs()
+                    {
+                        ChangeType = WatcherChangeTypes.Renamed,
+                        Placeholder = new(e.FullPath, serverProvider.GetRelativePath(e.FullPath)),
+                        OldRelativePath = serverProvider.GetRelativePath(e.OldFullPath)
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                Styletronix.Debug.WriteLine(ex.Message, System.Diagnostics.TraceLevel.Error);
+            }
+        }
+
+        private void FileSystemWatcher_Deleted(object sender, FileSystemEventArgs e)
+        {
+            if (e.FullPath.Contains(@"$Recycle.bin")) return;
+
+            try
+            {
+                fileChangedActionBlock.Post(new FileChangedEventArgs()
+                {
+                    ChangeType = e.ChangeType,
+                    ResyncSubDirectories = false,
+                    Placeholder = new(serverProvider.GetRelativePath(e.FullPath), false)
+                });
+            }
+            catch (Exception ex)
+            {
+                Styletronix.Debug.WriteLine(ex.Message, System.Diagnostics.TraceLevel.Error);
+            }
+
+        }
+
+        private void FileSystemWatcher_Created(object sender, FileSystemEventArgs e)
+        {
+            if (e.FullPath.Contains(@"$Recycle.bin")) return;
+
+            try
+            {
+                fileChangedActionBlock.Post(new FileChangedEventArgs()
+                {
+                    ChangeType = e.ChangeType,
+                    ResyncSubDirectories = false,
+                    Placeholder = new(e.FullPath, serverProvider.GetRelativePath(e.FullPath))
+                });
+            }
+            catch (Exception ex)
+            {
+                Styletronix.Debug.WriteLine(ex.Message, System.Diagnostics.TraceLevel.Error);
+            }
+        }
+
+
+
+        protected virtual void Dispose(bool disposing)
+        {
+            if (!disposedValue)
+            {
+                if (disposing)
+                {
+                    if (this.fileSystemWatcher != null)
+                    {
+                        this.fileSystemWatcher.EnableRaisingEvents = false;
+                        this.fileSystemWatcher.Dispose();
+                    }
+                    this.fileChangedActionBlock?.Complete();
+                }
+
+                disposedValue = true;
+            }
+        }
+
+        // // TODO: Finalizer nur überschreiben, wenn "Dispose(bool disposing)" Code für die Freigabe nicht verwalteter Ressourcen enthält
+        // ~ServerCallback()
+        // {
+        //     // Ändern Sie diesen Code nicht. Fügen Sie Bereinigungscode in der Methode "Dispose(bool disposing)" ein.
+        //     Dispose(disposing: false);
+        // }
+
+        public void Dispose()
+        {
+            // Ändern Sie diesen Code nicht. Fügen Sie Bereinigungscode in der Methode "Dispose(bool disposing)" ein.
+            Dispose(disposing: true);
+            GC.SuppressFinalize(this);
+        }
     }
 }
