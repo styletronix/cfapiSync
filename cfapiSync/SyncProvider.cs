@@ -496,20 +496,20 @@ public partial class SyncProvider : IDisposable
         }
         catch (Exception ex)
         {
-            Styletronix.Debug.WriteLine("TODO: Exception Handling required: " + path + " " + ex.Message, System.Diagnostics.TraceLevel.Error);
+            //Styletronix.Debug.WriteLine("TODO: Exception Handling required: " + path + " " + ex.Message, System.Diagnostics.TraceLevel.Error);
+            Styletronix.Debug.LogException(ex);
 
+            //try
+            //{
+            //    if (ex.HResult == -2147024533) //Damaged Meta Data
+            //    {
+            //        using ExtendedPlaceholderState p = new(path);
+            //        p.RevertPlaceholder(true);
+            //    }
+            //}catch(Exception ex2)
+            //{
 
-            try
-            {
-                if (ex.HResult == -2147024533) //Damaged Meta Data
-                {
-                    using ExtendedPlaceholderState p = new(path);
-                    p.RevertPlaceholder(true);
-                }
-            }catch(Exception ex2)
-            {
-
-            }
+            //}
 
             FailedData failedData = new()
             {
@@ -526,6 +526,8 @@ public partial class SyncProvider : IDisposable
                 current.RetryCount += 1;
                 return current;
             });
+
+            //TODO: Consume FailedDataQueue and handle retries
         }
     }
 
@@ -700,7 +702,7 @@ public partial class SyncProvider : IDisposable
 
     private static void ValidateETag(ExtendedPlaceholderState localPlaceHolder, Placeholder remotePlaceholder)
     {
-        if (localPlaceHolder.ETag != remotePlaceholder.ETag)
+        if (localPlaceHolder.ETag != remotePlaceholder.ETag || localPlaceHolder.PlaceholderInfoStandard.ModifiedDataSize > 0)
         {
             localPlaceHolder.SetInSyncState(CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_NOT_IN_SYNC).ThrowOnFailure();
         }

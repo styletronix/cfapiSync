@@ -18,6 +18,10 @@ namespace Styletronix
             if (hResult != HRESULT.S_OK)
                 Debug.WriteLine(hResult.GetException().Message, System.Diagnostics.TraceLevel.Error);
         }
+        public static void LogException(Exception ex)
+        {
+            Debug.WriteLine(ex.ToString(), System.Diagnostics.TraceLevel.Error);
+        }
 
         public static void WriteLine(string value)
         {
