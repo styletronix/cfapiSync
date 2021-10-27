@@ -28,6 +28,7 @@
         /// </summary>
         private void InitializeComponent()
         {
+            this.components = new System.ComponentModel.Container();
             this.button1 = new System.Windows.Forms.Button();
             this.button2 = new System.Windows.Forms.Button();
             this.button3 = new System.Windows.Forms.Button();
@@ -43,6 +44,8 @@
             this.label5 = new System.Windows.Forms.Label();
             this.label6 = new System.Windows.Forms.Label();
             this.label7 = new System.Windows.Forms.Label();
+            this.textBox1 = new System.Windows.Forms.TextBox();
+            this.contextMenuStrip1 = new System.Windows.Forms.ContextMenuStrip(this.components);
             this.SuspendLayout();
             // 
             // button1
@@ -57,7 +60,7 @@
             // 
             // button2
             // 
-            this.button2.Location = new System.Drawing.Point(18, 211);
+            this.button2.Location = new System.Drawing.Point(564, 95);
             this.button2.Name = "button2";
             this.button2.Size = new System.Drawing.Size(186, 23);
             this.button2.TabIndex = 1;
@@ -67,7 +70,7 @@
             // 
             // button3
             // 
-            this.button3.Location = new System.Drawing.Point(15, 278);
+            this.button3.Location = new System.Drawing.Point(564, 142);
             this.button3.Name = "button3";
             this.button3.Size = new System.Drawing.Size(186, 23);
             this.button3.TabIndex = 2;
@@ -111,7 +114,7 @@
             | System.Windows.Forms.AnchorStyles.Right)));
             this.textBox_serverPath.Location = new System.Drawing.Point(127, 12);
             this.textBox_serverPath.Name = "textBox_serverPath";
-            this.textBox_serverPath.Size = new System.Drawing.Size(552, 20);
+            this.textBox_serverPath.Size = new System.Drawing.Size(768, 20);
             this.textBox_serverPath.TabIndex = 6;
             // 
             // textBox_localPath
@@ -120,7 +123,7 @@
             | System.Windows.Forms.AnchorStyles.Right)));
             this.textBox_localPath.Location = new System.Drawing.Point(127, 61);
             this.textBox_localPath.Name = "textBox_localPath";
-            this.textBox_localPath.Size = new System.Drawing.Size(552, 20);
+            this.textBox_localPath.Size = new System.Drawing.Size(768, 20);
             this.textBox_localPath.TabIndex = 7;
             // 
             // label1
@@ -172,7 +175,7 @@
             // label6
             // 
             this.label6.AutoSize = true;
-            this.label6.Location = new System.Drawing.Point(15, 237);
+            this.label6.Location = new System.Drawing.Point(432, 123);
             this.label6.Name = "label6";
             this.label6.Size = new System.Drawing.Size(424, 13);
             this.label6.TabIndex = 13;
@@ -182,17 +185,35 @@
             // label7
             // 
             this.label7.AutoSize = true;
-            this.label7.Location = new System.Drawing.Point(15, 304);
+            this.label7.Location = new System.Drawing.Point(504, 168);
             this.label7.Name = "label7";
             this.label7.Size = new System.Drawing.Size(291, 13);
             this.label7.TabIndex = 14;
             this.label7.Text = "Unregisters the Sync Provider, but keeps local placeholders.";
             // 
+            // textBox1
+            // 
+            this.textBox1.Anchor = ((System.Windows.Forms.AnchorStyles)((((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Bottom) 
+            | System.Windows.Forms.AnchorStyles.Left) 
+            | System.Windows.Forms.AnchorStyles.Right)));
+            this.textBox1.Location = new System.Drawing.Point(18, 194);
+            this.textBox1.Multiline = true;
+            this.textBox1.Name = "textBox1";
+            this.textBox1.ScrollBars = System.Windows.Forms.ScrollBars.Vertical;
+            this.textBox1.Size = new System.Drawing.Size(877, 143);
+            this.textBox1.TabIndex = 15;
+            // 
+            // contextMenuStrip1
+            // 
+            this.contextMenuStrip1.Name = "contextMenuStrip1";
+            this.contextMenuStrip1.Size = new System.Drawing.Size(61, 4);
+            // 
             // Form1
             // 
             this.AutoScaleDimensions = new System.Drawing.SizeF(6F, 13F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
-            this.ClientSize = new System.Drawing.Size(692, 349);
+            this.ClientSize = new System.Drawing.Size(908, 349);
+            this.Controls.Add(this.textBox1);
             this.Controls.Add(this.label7);
             this.Controls.Add(this.label6);
             this.Controls.Add(this.label5);
@@ -233,5 +254,7 @@
         private System.Windows.Forms.Label label5;
         private System.Windows.Forms.Label label6;
         private System.Windows.Forms.Label label7;
+        private System.Windows.Forms.TextBox textBox1;
+        private System.Windows.Forms.ContextMenuStrip contextMenuStrip1;
     }
 }

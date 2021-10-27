@@ -9,38 +9,6 @@ using static Vanara.PInvoke.CldApi;
 
 namespace Styletronix
 {
-    public class Debug
-    {
-        public static System.Diagnostics.TraceSwitch generalSwitch = new("General", "Entire Application") { Level = System.Diagnostics.TraceLevel.Verbose };
-
-        public static void LogResponse(HRESULT hResult)
-        {
-            if (hResult != HRESULT.S_OK)
-                Debug.WriteLine(hResult.GetException().Message, System.Diagnostics.TraceLevel.Error);
-        }
-        public static void LogException(Exception ex)
-        {
-            Debug.WriteLine(ex.ToString(), System.Diagnostics.TraceLevel.Error);
-        }
-
-        public static void WriteLine(string value)
-        {
-            if (generalSwitch.Level >= System.Diagnostics.TraceLevel.Verbose)
-                System.Diagnostics.Debug.WriteLine(value);
-        }
-
-        public static void WriteLine(string value, string category, System.Diagnostics.TraceLevel traceLevel)
-        {
-            if (generalSwitch.Level >= traceLevel)
-                System.Diagnostics.Debug.WriteLine(value, category);
-        }
-        public static void WriteLine(string value, System.Diagnostics.TraceLevel traceLevel)
-        {
-            if (generalSwitch.Level >= traceLevel)
-                System.Diagnostics.Debug.WriteLine(value);
-        }
-
-    }
     public partial class CloudFilterApi
     {
         public static CF_PLACEHOLDER_BASIC_INFO GetPlaceholderInfoBasic(string fullPath, bool isDirectory)

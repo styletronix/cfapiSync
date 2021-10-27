@@ -1,4 +1,5 @@
-﻿using Styletronix.CloudSyncProvider;
+﻿using Styletronix;
+using Styletronix.CloudSyncProvider;
 using System;
 using System.Windows.Forms;
 
@@ -21,7 +22,15 @@ namespace ClassLibrary1
 
         private void Form1_Load(object sender, EventArgs e)
         {
+            Styletronix.Debug.LogEvent += WriteEventToLog;
+        }
 
+        private void WriteEventToLog(object sender, Debug.LogEventArgs e)
+        {
+            this.BeginInvoke(new Action(() =>
+            {
+                this.textBox1.AppendText(e.Message + "\r\n");
+            }));
         }
 
         private void InitProvider()

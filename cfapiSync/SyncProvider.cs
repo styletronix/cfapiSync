@@ -25,7 +25,7 @@ public partial class SyncProvider : IDisposable
     private readonly int chunkSize = 1024 * 1024 * 2; // 10MB chunkSize for File Download / Upload
     private readonly int stackSize = 1024 * 512; // Buffer size for P/Invoke Call to CFExecute max 1 MB
     private bool disposedValue;
-    private string[] fileExclusions = new string[] { @"Thumbs.db", @"Desktop.ini" };
+    private readonly string[] fileExclusions = new string[] { @"Thumbs.db", @"Desktop.ini" };
 
     public CancellationToken GlobalShutDownToken => GlobalShutDownTokenSource.Token;
 
@@ -477,15 +477,17 @@ public partial class SyncProvider : IDisposable
         }
     }
 
-    private void FileSystemWatcher_OnError(object sender, ErrorEventArgs e)
+    private async void FileSystemWatcher_OnError(object sender, ErrorEventArgs e)
     {
         Styletronix.Debug.WriteLine("FileSystemWatcher Error: " + e.GetException().Message, System.Diagnostics.TraceLevel.Warning);
 
+        await Task.Delay(2000, this.GlobalShutDownToken);
         _ = this.SyncDataAsync(SyncMode.Local, this.GlobalShutDownToken);
     }
-    private void FileSystemWatcher_OnChanged(object sender, FileSystemEventArgs e)
+    private async void FileSystemWatcher_OnChanged(object sender, FileSystemEventArgs e)
     {
-        ChangedDataQueueBlock.Post(e.FullPath);
+        await Task.Delay(2000, this.GlobalShutDownToken);
+       await  ChangedDataQueueBlock.SendAsync(e.FullPath);
     }
 
     private async Task ProcessFileChanged(string path)
@@ -710,8 +712,6 @@ public partial class SyncProvider : IDisposable
         {
             if (localPlaceHolder.PlaceholderInfoStandard.ModifiedDataSize == 0)
                 localPlaceHolder.SetInSyncState(CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_IN_SYNC).ThrowOnFailure();
-
-            //localPlaceHolder.RevertPlaceholder(true);
         }
     }
 
