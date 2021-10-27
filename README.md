@@ -15,6 +15,7 @@ There are lot things to do, but at least for lokal folders it seems to be fully 
 
 #### Planed:
 - WebDav
+- Amazon S3
 
 ### TODO:
 - Failure Handling / Retry.
