@@ -414,4 +414,11 @@ namespace Styletronix.CloudSyncProvider
         public string OldRelativePath;
         public Placeholder Placeholder;
     }
+    public class FailedData
+    {
+        public DateTime LastTry;
+        public DateTime NextTry;
+        public Exception LastException;
+        public int RetryCount;
+    }
 }

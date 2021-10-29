@@ -273,46 +273,32 @@ namespace Styletronix
                     return new GenericResult((int)res);
                 }
             }
-            //public async Task<GenericResult> HydratePlaceholderAsync()
-            //{
-            //    if (string.IsNullOrEmpty(_FullPath)) { return new GenericResult(CloudExceptions.FileOrDirectoryNotFound); }
-            //    if (!IsPlaceholder) { return new GenericResult(NtStatus.STATUS_CLOUD_FILE_NOT_SUPPORTED); }
 
-            //    Debug.WriteLine("HydratePlaceholder " + _FullPath, System.Diagnostics.TraceLevel.Info);
+            public async Task<GenericResult> HydratePlaceholderAsync()
+            {
+                if (string.IsNullOrEmpty(_FullPath)) { return new GenericResult(CloudExceptions.FileOrDirectoryNotFound); }
+                if (!IsPlaceholder) { return new GenericResult(NtStatus.STATUS_CLOUD_FILE_NOT_SUPPORTED); }
 
-               
-            //    var overlapped = OverlappedAsync.SetupOverlappedFunction(SafeFileHandleForCldApi, new AsyncCallback(HydratePlaceholderCallback), null);
-            //    HRESULT res;
-               
-            //    unsafe
-            //    {
-            //        res = CfHydratePlaceholder(SafeFileHandleForCldApi, 0, -1, CF_HYDRATE_FLAGS.CF_HYDRATE_FLAG_NONE, overlapped.Overlapped);
-            //    }
+                Debug.WriteLine("HydratePlaceholderAsync " + _FullPath, System.Diagnostics.TraceLevel.Info);
 
 
-            //    if (res == HRESULT.E_PENDING)
-            //    {
-            //        // Overlapped running
-            //        return new GenericResult();
-            //    }
+                HRESULT res = await Task.Run(() =>
+                 {
+                     return CfHydratePlaceholder(SafeFileHandleForCldApi, 0, -1, CF_HYDRATE_FLAGS.CF_HYDRATE_FLAG_NONE);
+                 }).ConfigureAwait(false);
 
-            //    if (res.Succeeded)
-            //    {
-            //        Reload();
-            //        return new GenericResult();
-            //    }
-            //    else
-            //    {
-            //        Debug.WriteLine("HydratePlaceholder FAILED " + _FullPath + " Error: " + res.Code, System.Diagnostics.TraceLevel.Warning);
-            //        return new GenericResult((int)res);
-            //    }
-            //}
-
-            //private void HydratePlaceholderCallback(IAsyncResult ar)
-            //{
-            //    var x = ar;
-            //    //throw new NotImplementedException();
-            //}
+                if (res.Succeeded)
+                {
+                    Debug.WriteLine("HydratePlaceholderAsync Completed: " + _FullPath, System.Diagnostics.TraceLevel.Verbose);
+                    Reload();
+                    return new GenericResult();
+                }
+                else
+                {
+                    Debug.WriteLine("HydratePlaceholderAsync FAILED " + _FullPath + " Error: " + res.Code, System.Diagnostics.TraceLevel.Warning);
+                    return new GenericResult((int)res);
+                }
+            }
 
             public bool SetPinState(CF_PIN_STATE state)
             {
@@ -443,6 +429,7 @@ namespace Styletronix
 
             public void Reload()
             {
+                Styletronix.Debug.WriteLine("Reload Placeholder Data: " + this.FullPath, System.Diagnostics.TraceLevel.Verbose);
                 using Kernel32.SafeSearchHandle findHandle = Kernel32.FindFirstFile(@"\\?\" + _FullPath, out WIN32_FIND_DATA findData);
                 PlaceholderState = CfGetPlaceholderStateFromFindData(findData);
                 Attributes = findData.dwFileAttributes;

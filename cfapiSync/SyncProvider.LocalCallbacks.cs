@@ -31,23 +31,21 @@ public partial class SyncProvider
 
     public void FETCH_PLACEHOLDERS(in CF_CALLBACK_INFO CallbackInfo, in CF_CALLBACK_PARAMETERS CallbackParameters)
     {
-        Styletronix.Debug.WriteLine("FETCH_PLACEHOLDERS: " + CallbackInfo.NormalizedPath, System.Diagnostics.TraceLevel.Info);
-
         CF_OPERATION_INFO opInfo = CreateOPERATION_INFO(CallbackInfo, CF_OPERATION_TYPE.CF_OPERATION_TYPE_TRANSFER_PLACEHOLDERS);
+        
         CancellationTokenSource ctx = new();
-
         FetchPlaceholdersCancellationTokens.TryAdd(CallbackInfo.NormalizedPath, ctx);
 
         FETCH_PLACEHOLDERS_Internal(GetRelativePath(CallbackInfo), opInfo, CallbackParameters.FetchPlaceholders.Pattern, ctx.Token);
     }
     public void CANCEL_FETCH_PLACEHOLDERS(in CF_CALLBACK_INFO CallbackInfo, in CF_CALLBACK_PARAMETERS CallbackParameters)
     {
-        Styletronix.Debug.WriteLine("CANCEL_FETCH_PLACEHOLDERS " + CallbackInfo.NormalizedPath, System.Diagnostics.TraceLevel.Info);
+        Styletronix.Debug.WriteLine("Cancel Fetch Placeholders " + CallbackInfo.NormalizedPath, System.Diagnostics.TraceLevel.Info);
 
         if (FetchPlaceholdersCancellationTokens.TryRemove(CallbackInfo.NormalizedPath, out CancellationTokenSource ctx))
         {
             ctx.Cancel();
-            Styletronix.Debug.WriteLine("FETCH_PLACEHOLDERS Cancelled" + CallbackInfo.NormalizedPath, System.Diagnostics.TraceLevel.Verbose);
+            Styletronix.Debug.WriteLine("Fetch Placeholder Cancelled" + CallbackInfo.NormalizedPath, System.Diagnostics.TraceLevel.Verbose);
         }
     }
     public void FETCH_DATA(in CF_CALLBACK_INFO CallbackInfo, in CF_CALLBACK_PARAMETERS CallbackParameters)
@@ -62,8 +60,6 @@ public partial class SyncProvider
 
         if ((offset + length) == CallbackParameters.FetchData.OptionalFileOffset)
         {
-            //length = Math.Max(length, Math.Min(this.optionalDownloadPrefetchSize, length + CallbackParameters.FetchData.OptionalLength));
-            //length =     Math.Max(length, length + CallbackParameters.FetchData.OptionalLength);
             if (length < chunkSize)
             {
                 length = Math.Min(chunkSize, CallbackParameters.FetchData.OptionalLength + length);
@@ -107,16 +103,12 @@ public partial class SyncProvider
     }
     public void NOTIFY_DELETE(in CF_CALLBACK_INFO CallbackInfo, in CF_CALLBACK_PARAMETERS CallbackParameters)
     {
-        //Styletronix.Debug.WriteLine("NOTIFY_DELETE: " + CallbackInfo.NormalizedPath);
-
         DeleteQueue.Post(new DeleteAction()
         {
             OpInfo = CreateOPERATION_INFO(CallbackInfo, CF_OPERATION_TYPE.CF_OPERATION_TYPE_ACK_DELETE),
             IsDirectory = CallbackParameters.Delete.Flags.HasFlag(CF_CALLBACK_DELETE_FLAGS.CF_CALLBACK_DELETE_FLAG_IS_DIRECTORY),
             RelativePath = GetRelativePath(CallbackInfo)
         });
-
-        //NOTIFY_DELETE_Internal(GetRelativePath(CallbackInfo), isDirectory, opInfo);
     }
     public void NOTIFY_DELETE_COMPLETION(in CF_CALLBACK_INFO CallbackInfo, in CF_CALLBACK_PARAMETERS CallbackParameters)
     {
@@ -142,8 +134,13 @@ public partial class SyncProvider
     }
 
 
+
+
     public async void FETCH_PLACEHOLDERS_Internal(string relativePath, CF_OPERATION_INFO opInfo, string pattern, CancellationToken cancellationToken)
     {
+
+        Styletronix.Debug.WriteLine("Fetch Placeholder: " + relativePath, System.Diagnostics.TraceLevel.Info);
+
         using SafePlaceHolderList infos = new();
         List<Placeholder> placeholders = new();
         NtStatus completionStatus = NtStatus.STATUS_SUCCESS;
@@ -275,14 +272,13 @@ public partial class SyncProvider
     {
         NTStatus status;
         string fullPath = SyncContext.LocalRootFolder + "\\" + dat.RelativePath;
-
-        if (!(dat.IsDirectory ? Directory.Exists(fullPath) : File.Exists(fullPath)))
+        if (IsExcludedFile(dat.RelativePath))
         {
             status = NTStatus.STATUS_SUCCESS;
             goto skip;
         }
 
-        if (fullPath.Contains(@"$Recycle.bin"))
+        if (!(dat.IsDirectory ? Directory.Exists(fullPath) : File.Exists(fullPath)))
         {
             status = NTStatus.STATUS_SUCCESS;
             goto skip;
@@ -298,11 +294,11 @@ public partial class SyncProvider
         DeleteFileResult result = await SyncContext.ServerProvider.DeleteFileAsync(dat.RelativePath, dat.IsDirectory);
         if (result.Succeeded)
         {
-            Styletronix.Debug.WriteLine("Deleted: " + dat.RelativePath, System.Diagnostics.TraceLevel.Verbose);
+            Styletronix.Debug.WriteLine("Deleted on Server: " + dat.RelativePath, System.Diagnostics.TraceLevel.Verbose);
         }
         else
         {
-            Styletronix.Debug.WriteLine("Delete FAILED " + result.Status.ToString() + ": " + dat.RelativePath, System.Diagnostics.TraceLevel.Warning); ;
+            Styletronix.Debug.WriteLine("Delete on Server FAILED " + result.Status.ToString() + ": " + dat.RelativePath, System.Diagnostics.TraceLevel.Warning); ;
         }
         status = (int)result.Status;
 
@@ -346,13 +342,13 @@ public partial class SyncProvider
         {
             while (!fileFetchHelper.CancellationToken.IsCancellationRequested)
             {
-                SyncProviderUtils.FetchRange item = await fileFetchHelper.WaitTakeNextAsync();
+                SyncProviderUtils.FetchRange item = await fileFetchHelper.WaitTakeNextAsync().ConfigureAwait(false);
                 if (fileFetchHelper.CancellationToken.IsCancellationRequested) { break; }
                 if (item != null)
                 {
                     try
                     {
-                        FetchDataAsync(item).Wait(fileFetchHelper.CancellationToken);
+                        await FetchDataAsync(item).ConfigureAwait(false);
                     }
                     catch (Exception ex)
                     {
@@ -361,7 +357,7 @@ public partial class SyncProvider
                 }
             }
         }, fileFetchHelper.CancellationToken, TaskCreationOptions.LongRunning |
-        TaskCreationOptions.RunContinuationsAsynchronously, TaskScheduler.Default);
+        TaskCreationOptions.RunContinuationsAsynchronously, TaskScheduler.Default).Unwrap();
     }
 
     private async Task FetchDataAsync(SyncProviderUtils.FetchRange data)
@@ -588,7 +584,7 @@ public partial class SyncProvider
             if (x == null)
             {
                 //   _waitForNewItem.WaitOne();
-                await autoResetEventAsync.WaitAsync(CancellationToken);
+                await autoResetEventAsync.WaitAsync(CancellationToken).ConfigureAwait(false);
                 lock (lockObject)
                 {
                     //_waitForNewItem.Reset();

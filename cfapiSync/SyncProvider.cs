@@ -22,12 +22,15 @@ public partial class SyncProvider : IDisposable
     private CancellationTokenSource ChangedDataCancellationTokenSource;
     private readonly CancellationTokenSource GlobalShutDownTokenSource = new();
     private readonly SyncProviderUtils.SyncContext SyncContext;
-    private readonly int chunkSize = 1024 * 1024 * 2; // 10MB chunkSize for File Download / Upload
+
+    private readonly int chunkSize = 1024 * 1024 * 2; // 2MB chunkSize for File Download / Upload
+    private readonly int optionalChunkSizeFaktor = 2; // If optional Offset is supplied, Prefetch x times of chunkSize
+    private readonly int optionalChunkSize;
     private readonly int stackSize = 1024 * 512; // Buffer size for P/Invoke Call to CFExecute max 1 MB
+
     private bool disposedValue;
     private readonly string[] fileExclusions = new string[] { @"Thumbs.db", @"Desktop.ini" };
-
-    public CancellationToken GlobalShutDownToken => GlobalShutDownTokenSource.Token;
+    private CancellationToken GlobalShutDownToken => GlobalShutDownTokenSource.Token;
 
     public SyncProvider(SyncProviderParameters parameter)
     {
@@ -40,6 +43,8 @@ public partial class SyncProvider : IDisposable
         };
         SyncContext.ServerProvider.SyncContext = SyncContext;
 
+        optionalChunkSize = optionalChunkSizeFaktor * chunkSize;
+
         RemoteChangesQueue = new(ProcessRemoteFileChanged);
         FetchDataQueue = new();
         FetchDataRunningQueue = new();
@@ -51,15 +56,13 @@ public partial class SyncProvider : IDisposable
         SyncContext.ServerProvider.FileChanged += ServerProvider_FileChanged;
     }
 
-
-
     public string GetSyncRootID()
     {
         string syncRootID = SyncContext.SyncProviderParameter.ProviderInfo.ProviderId.ToString();
         syncRootID += @"!";
-        syncRootID += System.Security.Principal.WindowsIdentity.GetCurrent().User.Value; // System.DirectoryServices.AccountManagement.UserPrincipal.Current.Sid.Value;
+        syncRootID += System.Security.Principal.WindowsIdentity.GetCurrent().User.Value;
         syncRootID += @"!";
-        syncRootID += SyncContext.LocalRootFolder.GetHashCode();  // Provider Account -> Used Hash of LocalPath asuming that no Account would be synchronized to the same Folder.
+        syncRootID += SyncContext.LocalRootFolder.GetHashCode(); // Provider Account -> Used Hash of LocalPath asuming that no Account would be synchronized to the same Folder.
         return syncRootID;
     }
     internal static bool FileOrDirectoryExists(string name)
@@ -225,6 +228,8 @@ public partial class SyncProvider : IDisposable
 
     }
 
+
+
     public Task SyncDataAsync(SyncMode syncMode)
     {
         return this.SyncDataAsync(syncMode, "", this.GlobalShutDownToken);
@@ -255,14 +260,17 @@ public partial class SyncProvider : IDisposable
                     {
                         if (relativePath.Length > 0) relativePath = "\\" + relativePath;
 
-                        await FindLocalChangedDataRecursive(SyncContext.LocalRootFolder + relativePath, ctx, syncMode);
-                    }, ctx);
+                        await FindLocalChangedDataRecursive(SyncContext.LocalRootFolder + relativePath, ctx, syncMode).ConfigureAwait(false);
+                    }, ctx).ConfigureAwait(false);
         }
         finally
         {
             CfUpdateSyncProviderStatus(SyncContext.ConnectionKey, CF_SYNC_PROVIDER_STATUS.CF_PROVIDER_STATUS_IDLE);
         }
     }
+
+
+
     public async Task Start()
     {
         if (Directory.Exists(SyncContext.LocalRootFolder) == false)
@@ -410,7 +418,7 @@ public partial class SyncProvider : IDisposable
             using ExtendedPlaceholderState pl = new(item);
             if (pl.IsPlaceholder)
             {
-                if (pl.HydratePlaceholder().Succeeded)
+                if ((await pl.HydratePlaceholderAsync()).Succeeded)
                 {
                     pl.SetPinState(CF_PIN_STATE.CF_PIN_STATE_PINNED);
                     if (pl.RevertPlaceholder(false))
@@ -430,16 +438,10 @@ public partial class SyncProvider : IDisposable
 
 
     #region "Monitor and handle local file changes"
+
     private ActionBlock<string> ChangedDataQueueBlock;
     private readonly ConcurrentDictionary<string, FailedData> FailedDataQueue = new();
 
-    private class FailedData
-    {
-        public DateTime LastTry;
-        public DateTime NextTry;
-        public Exception LastException;
-        public int RetryCount;
-    }
     private void InitWatcher()
     {
         Styletronix.Debug.WriteLine("InitWatcher", System.Diagnostics.TraceLevel.Verbose);
@@ -481,20 +483,20 @@ public partial class SyncProvider : IDisposable
     {
         Styletronix.Debug.WriteLine("FileSystemWatcher Error: " + e.GetException().Message, System.Diagnostics.TraceLevel.Warning);
 
-        await Task.Delay(2000, this.GlobalShutDownToken);
-        _ = this.SyncDataAsync(SyncMode.Local, this.GlobalShutDownToken);
+        await Task.Delay(2000, this.GlobalShutDownToken).ConfigureAwait(false);
+        _ = this.SyncDataAsync(SyncMode.Local, this.GlobalShutDownToken).ConfigureAwait(false);
     }
     private async void FileSystemWatcher_OnChanged(object sender, FileSystemEventArgs e)
     {
-        await Task.Delay(2000, this.GlobalShutDownToken);
-       await  ChangedDataQueueBlock.SendAsync(e.FullPath);
+        await Task.Delay(2000, this.GlobalShutDownToken).ConfigureAwait(false);
+        await ChangedDataQueueBlock.SendAsync(e.FullPath).ConfigureAwait(false);
     }
 
     private async Task ProcessFileChanged(string path)
     {
         try
         {
-            await ProcessChangedDataAsync(path, ChangedDataCancellationTokenSource.Token);
+            await ProcessChangedDataAsync(path, ChangedDataCancellationTokenSource.Token).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -645,7 +647,7 @@ public partial class SyncProvider : IDisposable
                     // Local File requires update...
                     if (localPlaceHolder.PlaceholderInfoBasic.PinState == CF_PIN_STATE.CF_PIN_STATE_PINNED)
                     {
-                        HydratePlaceholder(localPlaceHolder, getFileResult.Placeholder);
+                         HydratePlaceholder(localPlaceHolder, getFileResult.Placeholder);
                         return;
                     }
                     else
@@ -674,7 +676,7 @@ public partial class SyncProvider : IDisposable
             // Hydration requested
             if (localPlaceHolder.PlaceholderInfoBasic.PinState == CF_PIN_STATE.CF_PIN_STATE_PINNED && localPlaceHolder.PlaceholderState.HasFlag(CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_PARTIAL))
             {
-                HydratePlaceholder(localPlaceHolder, getFileResult.Placeholder);
+                 HydratePlaceholder(localPlaceHolder, getFileResult.Placeholder);
                 return;
             }
 
@@ -715,12 +717,36 @@ public partial class SyncProvider : IDisposable
         }
     }
 
-    private static void HydratePlaceholder(ExtendedPlaceholderState localPlaceHolder, Placeholder remotePlaceholder)
+    private async Task HydratePlaceholderAsync(ExtendedPlaceholderState localPlaceHolder, Placeholder remotePlaceholder)
     {
         if (localPlaceHolder.PlaceholderInfoBasic.InSyncState == CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_IN_SYNC)
         {
             // Local File in Sync: Hydrate....
-            localPlaceHolder.HydratePlaceholder().ThrowOnFailure();
+            (await localPlaceHolder.HydratePlaceholderAsync()).ThrowOnFailure();
+        }
+        else
+        {
+            bool pinned = (localPlaceHolder.PlaceholderInfoBasic.PinState == CF_PIN_STATE.CF_PIN_STATE_PINNED);
+            if (pinned)
+                localPlaceHolder.SetPinState(CF_PIN_STATE.CF_PIN_STATE_UNSPECIFIED);
+
+            // Local File not in Sync: Update placeholder, dehydrate, hydrate....
+            var updateResult = localPlaceHolder.UpdatePlaceholder(remotePlaceholder, CF_UPDATE_FLAGS.CF_UPDATE_FLAG_MARK_IN_SYNC | CF_UPDATE_FLAGS.CF_UPDATE_FLAG_DEHYDRATE);
+
+            if (pinned)
+                localPlaceHolder.SetPinState(CF_PIN_STATE.CF_PIN_STATE_PINNED);
+
+            updateResult.ThrowOnFailure();
+
+            (await localPlaceHolder.HydratePlaceholderAsync()).ThrowOnFailure();
+        }
+    }
+    private void HydratePlaceholder(ExtendedPlaceholderState localPlaceHolder, Placeholder remotePlaceholder)
+    {
+        if (localPlaceHolder.PlaceholderInfoBasic.InSyncState == CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_IN_SYNC)
+        {
+            // Local File in Sync: Hydrate....
+             localPlaceHolder.HydratePlaceholder().ThrowOnFailure();
         }
         else
         {

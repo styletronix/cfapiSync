@@ -2,9 +2,9 @@
 {
     public partial class CloudFilterApi
     {
-
         /// <summary>
         /// NT status values for Cloud Files
+        /// https://github.com/x64dbg/x64dbg/blob/development/bin/ntstatusdb.txt
         /// </summary>
         public enum NtStatus : uint
         {
@@ -40,7 +40,8 @@
             STATUS_CLOUD_FILE_PROPERTY_LOCK_CONFLICT = 0xC000CF1A,
             STATUS_CLOUD_FILE_REQUEST_CANCELED = 0xC000CF1B,
             STATUS_CLOUD_FILE_PROVIDER_TERMINATED = 0xC000CF1D,
-            STATUS_NOT_A_CLOUD_SYNC_ROOT = 0xC000CF1E
+            STATUS_NOT_A_CLOUD_SYNC_ROOT = 0xC000CF1E,
+            ERROR_IO_PENDING = 0x800703E5
         }
 
         public enum NtStatusFacility

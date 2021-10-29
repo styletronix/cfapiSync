@@ -18,20 +18,24 @@ public partial class SyncProvider : IDisposable
 {
     private readonly ActionBlock<FileChangedEventArgs> RemoteChangesQueue;
 
-    private void ServerProvider_FileChanged(object sender, FileChangedEventArgs e)
+    private async void ServerProvider_FileChanged(object sender, FileChangedEventArgs e)
     {
-        //Styletronix.Debug.WriteLine("ServerProviderFileChanged: " + e.Placeholder?.RelativeFileName, System.Diagnostics.TraceLevel.Verbose);
+        Styletronix.Debug.WriteLine("ServerProvider_FileChanged: (Delay 2000ms) " + e.Placeholder?.RelativeFileName, System.Diagnostics.TraceLevel.Verbose);
+        await Task.Delay(2000);
         RemoteChangesQueue.Post(e);
     }
 
     private async Task ProcessRemoteFileChanged(FileChangedEventArgs e)
     {
-        Styletronix.Debug.WriteLine("ServerProviderFileChanged: " + e.ChangeType.ToString() + " " + e.Placeholder?.RelativeFileName, System.Diagnostics.TraceLevel.Verbose);
+        Styletronix.Debug.WriteLine("ProcessRemoteFileChanged: " + e.ChangeType.ToString() + " " + e.Placeholder?.RelativeFileName, System.Diagnostics.TraceLevel.Verbose);
+        //await Task.Delay(2000);
+
         // TODO: Make use of Placeholder data submitted by ServerProvider.
         try
         {
             if (e.ResyncSubDirectories == true)
             {
+                Styletronix.Debug.WriteLine("Full Sync requested by ServerProvider.", System.Diagnostics.TraceLevel.Warning);
                 await SyncDataAsync(SyncMode.Full, e.Placeholder.RelativeFileName);
             }
             else
@@ -85,7 +89,7 @@ public partial class SyncProvider : IDisposable
         }
         catch (Exception ex)
         {
-            Styletronix.Debug.WriteLine("ServerProviderFileChanged Error: " + e.Placeholder?.RelativeFileName + "  " + ex.Message, System.Diagnostics.TraceLevel.Error);
+            Styletronix.Debug.WriteLine("ProcessRemoteFileChanged Error: " + e.Placeholder?.RelativeFileName + "  " + ex.Message, System.Diagnostics.TraceLevel.Error);
         }
     }
 
