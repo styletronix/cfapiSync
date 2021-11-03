@@ -13,10 +13,14 @@ namespace ClassLibrary1
         public Form1()
         {
             InitializeComponent();
-            var key = Microsoft.Win32.RegistryKey.OpenBaseKey(Microsoft.Win32.RegistryHive.CurrentUser, Microsoft.Win32.RegistryView.Default);
+            using var key = Microsoft.Win32.RegistryKey.OpenBaseKey(Microsoft.Win32.RegistryHive.CurrentUser, Microsoft.Win32.RegistryView.Default);
 
-            this.textBox_serverPath.Text = key.CreateSubKey(@"Software\Styletronix.net\cfapiSync", true).GetValue("serverPath", @"\\privatserver01.ama.local\Dokumente$").ToString();
-            this.textBox_localPath.Text = key.CreateSubKey(@"Software\Styletronix.net\cfapiSync", true).GetValue("localPath", Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) + @"\VirtualTest3").ToString();
+            this.textBox_serverPath.Text = SyncProviderUtils.GetUserSetting("ServerPath", "Provider\\1", @"\\privatserver01.ama.local\Dokumente$").ToString();
+            this.textBox_localPath.Text = SyncProviderUtils.GetUserSetting ("LocalPath", "Provider\\1", Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) + @"\VirtualTest").ToString();
+            this.textBox_Caption.Text = SyncProviderUtils.GetUserSetting("Caption", "Provider\\1", @"CfapiSync").ToString();
+
+
+            key.Close();
 
             refreshUITimer = new(RefreshUITimerCallback, null, 1000, 200);
         }
@@ -60,6 +64,7 @@ namespace ClassLibrary1
         {
             this.textBox_localPath.Enabled = false;
             this.textBox_serverPath.Enabled = false;
+            this.textBox_Caption.Enabled = false;
 
             if (SyncProvider == null)
             {
@@ -67,9 +72,9 @@ namespace ClassLibrary1
                 {
                     ProviderInfo = new BasicSyncProviderInfo()
                     {
-                        ProviderId = Guid.Parse(@"fdf0b5bb-be08-4544-b6f6-fa954e869a87"),
-                        ProviderName = "SXTestProvider",
-                        ProviderVersion = "0.0.1"
+                        ProviderId = Guid.Parse(@"fdf0b5bb-be08-4544-b6f6-fa954e869a87"),  // ProviderID must be unique for each Application
+                        ProviderName = this.textBox_Caption.Text,
+                        ProviderVersion = Application.ProductVersion
                     },
                     LocalDataPath = this.textBox_localPath.Text,
                     ServerProvider = new ServerProvider(this.textBox_serverPath.Text)
@@ -112,14 +117,6 @@ namespace ClassLibrary1
             //SyncProvider = null;
         }
 
-        private async void Button2_Click(object sender, EventArgs e)
-        {
-            this.button2.Enabled = false;
-
-            InitProvider();
-            await SyncProvider.RevertAllPlaceholders();
-        }
-
         private async void Button3_Click(object sender, EventArgs e)
         {
             this.button3.Enabled = false;
@@ -143,7 +140,12 @@ namespace ClassLibrary1
         private void Form1_FormClosing(object sender, FormClosingEventArgs e)
         {
             refreshUITimer?.Change(System.Threading.Timeout.Infinite, System.Threading.Timeout.Infinite);
-            refreshUITimer?.Dispose();  
+            refreshUITimer?.Dispose();
+        }
+
+        private void label3_Click(object sender, EventArgs e)
+        {
+
         }
     }
 }

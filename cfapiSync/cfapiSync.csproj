@@ -53,6 +53,7 @@
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Prefer32Bit>false</Prefer32Bit>
   </PropertyGroup>
   <PropertyGroup>
     <StartupObject>Program</StartupObject>
@@ -74,7 +75,7 @@
   <ItemGroup>
     <Compile Include="AutoResetEventAsync.cs" />
     <Compile Include="CloudFilterApi.ExtendedPlaceholderState.cs" />
-    <Compile Include="Debug.cs" />
+    <Compile Include="Styletronix.Debug.cs" />
     <Compile Include="ServerProvider.ServerCallback.cs" />
     <Compile Include="SyncProvider.LocalCallbacks.cs" />
     <Compile Include="SyncProvider.RemoteChanges.cs" />

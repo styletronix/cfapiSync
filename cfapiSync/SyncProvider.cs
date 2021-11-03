@@ -271,6 +271,8 @@ public partial class SyncProvider : IDisposable
     //}
     public async Task SyncDataAsync(SyncMode syncMode, string relativePath, CancellationToken ctx)
     {
+        if (MaintenanceInProgress) return;
+
         switch (syncMode)
         {
             case SyncMode.Local:
@@ -402,7 +404,7 @@ public partial class SyncProvider : IDisposable
                         if (!localPlaceholder.PlaceholderState.HasFlag(CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_PARTIAL) ||
                             !localPlaceholder.PlaceholderState.HasFlag(CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_IN_SYNC) ||
                             isExcludedFile ||
-                            localPlaceholder.PlaceholderInfoStandard.PinState == CF_PIN_STATE.CF_PIN_STATE_PINNED )
+                            localPlaceholder.PlaceholderInfoStandard.PinState == CF_PIN_STATE.CF_PIN_STATE_PINNED)
                         {
                             if (await SyncDataAsyncRecursive(fullFilePath, ctx, syncMode))
                                 anyFileHydrated = true;
@@ -639,40 +641,51 @@ public partial class SyncProvider : IDisposable
             Styletronix.Debug.WriteLine("Delete Root Folder: " + ex.ToString(), System.Diagnostics.TraceLevel.Error);
         }
     }
-    public Task RevertAllPlaceholders()
-    {
-        throw new NotImplementedException("This function is currently not working and requires internal modifications!");
+    //public Task RevertAllPlaceholders()
+    //{
+    //    //throw new NotImplementedException("This function is currently not working and requires internal modifications!");
 
-        //return RevertAllPlaceholders(new CancellationToken());
-    }
-    public async Task RevertAllPlaceholders(CancellationToken ctx)
-    {
-        Styletronix.Debug.WriteLine("RevertAllPlaceholders", System.Diagnostics.TraceLevel.Verbose);
-        StopWatcher();
+    //    return RevertAllPlaceholders(new CancellationToken());
+    //}
 
-        Styletronix.Debug.WriteLine("TODO: RevertAllPlaceholders ASYNC", System.Diagnostics.TraceLevel.Info);
-        foreach (string item in Directory.EnumerateFileSystemEntries(SyncContext.LocalRootFolder, "*", SearchOption.AllDirectories))
-        {
-            bool succeeded = false;
-            using ExtendedPlaceholderState pl = new(item);
-            if (pl.IsPlaceholder)
-            {
-                if ((await pl.HydratePlaceholderAsync()).Succeeded)
-                {
-                    pl.SetPinState(CF_PIN_STATE.CF_PIN_STATE_PINNED);
-                    if (pl.RevertPlaceholder(false))
-                        Styletronix.Debug.WriteLine("RevertPlaceholder OK: " + item, System.Diagnostics.TraceLevel.Verbose);
-                }
+    private bool MaintenanceInProgress = false;
 
-                if (succeeded == false)
-                    Styletronix.Debug.WriteLine("RevertPlaceholder FAILED: " + item, System.Diagnostics.TraceLevel.Warning);
-            }
-        }
+    //public async Task RevertAllPlaceholders(CancellationToken ctx)
+    //{
+    //    Styletronix.Debug.WriteLine("RevertAllPlaceholders", System.Diagnostics.TraceLevel.Verbose);
+    //    MaintenanceInProgress = true;
 
-        await Unregister();
+    //    Styletronix.Debug.WriteLine("RevertAllPlaceholders: FullSync", System.Diagnostics.TraceLevel.Verbose);
 
-        await Task.CompletedTask;
-    }
+    //    await SyncDataAsync(SyncMode.Full);
+
+    //    //StopWatcher();
+
+    //    Styletronix.Debug.WriteLine("TODO: RevertAllPlaceholders ASYNC", System.Diagnostics.TraceLevel.Info);
+
+    //    foreach (string item in Directory.EnumerateFileSystemEntries(SyncContext.LocalRootFolder, "*", SearchOption.AllDirectories))
+    //    {
+    //        using ExtendedPlaceholderState pl = new(item);
+    //        if (pl.IsPlaceholder && !pl.IsDirectory)
+    //        {
+    //            pl.SetPinState(CF_PIN_STATE.CF_PIN_STATE_EXCLUDED);
+
+    //            if (pl.PlaceholderState.HasFlag(CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_PARTIAL))
+    //            {
+    //                Styletronix.Debug.WriteLine("DELETE ", System.Diagnostics.TraceLevel.Verbose);
+    //                File.Delete(item);
+    //            }
+    //            else
+    //            {
+    //                pl.RevertPlaceholder(true).ThrowOnFailure();
+    //            }
+    //        }
+
+    //        await Unregister();
+
+    //        await Task.CompletedTask;
+    //    }
+    //}
 
 
     private readonly ConcurrentDictionary<string, FailedData> FailedDataQueue = new();
@@ -1125,6 +1138,7 @@ public partial class SyncProvider : IDisposable
             {
                 if (localPlaceHolder.PlaceholderState.HasFlag(CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_PARTIAL))
                 {
+                    //localPlaceHolder.RevertPlaceholder(true);
                     File.Delete(localPlaceHolder.FullPath);
                 }
                 else

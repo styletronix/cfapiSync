@@ -619,8 +619,11 @@ public partial class ServerProvider : IServerFileProvider
                 if (!isClosed)
                 {
                     isClosed = true;
-                    await fileStream?.FlushAsync();
-                    fileStream?.Close();
+                    if (fileStream != null)
+                    {
+                        await fileStream.FlushAsync();
+                        fileStream.Close();
+                    }
                 }
             }
             finally

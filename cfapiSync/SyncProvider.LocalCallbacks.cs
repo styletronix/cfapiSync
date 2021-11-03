@@ -36,14 +36,14 @@ public partial class SyncProvider
 
         CF_OPERATION_INFO opInfo = CreateOPERATION_INFO(CallbackInfo, CF_OPERATION_TYPE.CF_OPERATION_TYPE_TRANSFER_PLACEHOLDERS);
 
-        if (processInfo.ProcessId == System.Diagnostics.Process.GetCurrentProcess().Id)
-        {
-            // Own process should not trigger FETCH_PLACEHOLDERS. 
-            Styletronix.Debug.WriteLine("FETCH_PLACEHOLDERS Triggered by own Process!", System.Diagnostics.TraceLevel.Verbose);
-            cancelFetch = true;
-        }
+        //if (processInfo.ProcessId == System.Diagnostics.Process.GetCurrentProcess().Id)
+        //{
+        //    // Own process should not trigger FETCH_PLACEHOLDERS. 
+        //    Styletronix.Debug.WriteLine("FETCH_PLACEHOLDERS Triggered by own Process!", System.Diagnostics.TraceLevel.Verbose);
+        //    cancelFetch = true;
+        //}
 
-        foreach(var process in ExcludedProcessesForFetchPlaceholders)
+        foreach (var process in ExcludedProcessesForFetchPlaceholders)
         {
             if (processInfo.ImagePath.EndsWith(process, StringComparison.CurrentCultureIgnoreCase))
             {
@@ -62,7 +62,8 @@ public partial class SyncProvider
         {
             ExtendedPlaceholderState localPlaceholder = new(fullPath);
             localPlaceholder.ConvertToPlaceholder();
-            if (localPlaceholder.PlaceholderInfoStandard.PinState == CF_PIN_STATE.CF_PIN_STATE_PINNED){
+            if (localPlaceholder.PlaceholderInfoStandard.PinState == CF_PIN_STATE.CF_PIN_STATE_PINNED)
+            {
                 goto SkipCancel;
             }
 
@@ -80,10 +81,10 @@ public partial class SyncProvider
             return;
         }
 
-        SkipCancel:
+    SkipCancel:
 
         CancellationTokenSource ctx = new();
-       
+
         FetchPlaceholdersCancellationTokens.AddOrUpdate(relativePath, ctx, (k, v) =>
         {
             v?.Cancel();
@@ -158,6 +159,8 @@ public partial class SyncProvider
     }
     public void NOTIFY_DELETE(in CF_CALLBACK_INFO CallbackInfo, in CF_CALLBACK_PARAMETERS CallbackParameters)
     {
+        if (MaintenanceInProgress) return;
+
         DeleteQueue.Post(new DeleteAction()
         {
             OpInfo = CreateOPERATION_INFO(CallbackInfo, CF_OPERATION_TYPE.CF_OPERATION_TYPE_ACK_DELETE),
@@ -171,6 +174,8 @@ public partial class SyncProvider
     }
     public void NOTIFY_RENAME(in CF_CALLBACK_INFO CallbackInfo, in CF_CALLBACK_PARAMETERS CallbackParameters)
     {
+        if (MaintenanceInProgress) return;
+
         Styletronix.Debug.WriteLine("NOTIFY_RENAME: " + CallbackInfo.NormalizedPath + " -> " + CallbackParameters.Rename.TargetPath, System.Diagnostics.TraceLevel.Info);
 
         if (CallbackParameters.Rename.TargetPath.StartsWith(@"\$Recycle.Bin\"))
@@ -191,6 +196,8 @@ public partial class SyncProvider
 
     private void AddFileToChangeQueue(string fullPath, bool ignoreLock)
     {
+        if (MaintenanceInProgress) return;
+
         ChangedDataQueue.TryAdd(fullPath, ignoreLock);
     }
 
@@ -277,6 +284,8 @@ public partial class SyncProvider
 
     public async void NOTIFY_RENAME_Internal(string RelativeFileName, string RelativeFileNameDestination, bool isDirectory, CF_OPERATION_INFO opInfo)
     {
+        if (MaintenanceInProgress) return;
+
         //suspendLocalFileChangeHandling.BeginSuspension();
         try
         {
@@ -316,6 +325,8 @@ public partial class SyncProvider
     }
     private async Task NOTIFY_DELETE_Action(DeleteAction dat)
     {
+        if (MaintenanceInProgress) return;
+
         //suspendLocalFileChangeHandling.BeginSuspension();
         try
         {
