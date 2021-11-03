@@ -1,15 +1,16 @@
 ﻿using Styletronix.CloudSyncProvider;
 using System;
+using System.Collections.Concurrent;
 using System.IO;
 
 public partial class ServerProvider
 {
     internal class ServerCallback : IDisposable
     {
-        internal FileSystemWatcher fileSystemWatcher;
-        internal ServerProvider serverProvider;
-        internal bool disposedValue;
-        internal readonly System.Threading.Tasks.Dataflow.ActionBlock<FileChangedEventArgs> fileChangedActionBlock;
+        internal readonly FileSystemWatcher fileSystemWatcher;
+        private readonly ServerProvider serverProvider;
+        private bool disposedValue;
+        private readonly System.Threading.Tasks.Dataflow.ActionBlock<FileChangedEventArgs> fileChangedActionBlock;
 
         public ServerCallback(ServerProvider serverProvider)
         {
@@ -37,7 +38,6 @@ public partial class ServerProvider
 
             fileSystemWatcher.EnableRaisingEvents = true;
         }
-
 
         private void FileSystemWatcher_Error(object sender, ErrorEventArgs e)
         {
@@ -83,6 +83,7 @@ public partial class ServerProvider
         private void FileSystemWatcher_Changed(object sender, FileSystemEventArgs e)
         {
             if (e.FullPath.Contains(@"$Recycle.bin")) return;
+            if (Path.GetFileName(e.FullPath).StartsWith("$_")) return;
 
             try
             {
@@ -102,6 +103,13 @@ public partial class ServerProvider
         private void FileSystemWatcher_Renamed(object sender, RenamedEventArgs e)
         {
             if (e.FullPath.Contains(@"$Recycle.bin") && e.OldFullPath.Contains(@"$Recycle.bin")) return;
+            if (e.Name.StartsWith("$_")) return;
+
+            if (e.OldName.StartsWith("$_"))
+            {
+                FileSystemWatcher_Changed(sender, new FileSystemEventArgs(WatcherChangeTypes.Changed, Path.GetDirectoryName(e.FullPath), e.Name));
+                return;
+            }
 
             try
             {
@@ -140,6 +148,7 @@ public partial class ServerProvider
         private void FileSystemWatcher_Deleted(object sender, FileSystemEventArgs e)
         {
             if (e.FullPath.Contains(@"$Recycle.bin")) return;
+            if (Path.GetFileName(e.FullPath).StartsWith("$_")) return;
 
             try
             {
@@ -154,12 +163,12 @@ public partial class ServerProvider
             {
                 Styletronix.Debug.WriteLine(ex.Message, System.Diagnostics.TraceLevel.Error);
             }
-
         }
 
         private void FileSystemWatcher_Created(object sender, FileSystemEventArgs e)
         {
             if (e.FullPath.Contains(@"$Recycle.bin")) return;
+            if (Path.GetFileName(e.FullPath).StartsWith("$_")) return;
 
             try
             {
@@ -175,9 +184,7 @@ public partial class ServerProvider
                 Styletronix.Debug.WriteLine(ex.Message, System.Diagnostics.TraceLevel.Error);
             }
         }
-
-
-
+       
         protected virtual void Dispose(bool disposing)
         {
             if (!disposedValue)

@@ -1,6 +1,9 @@
 ﻿using Microsoft.Win32.SafeHandles;
 using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Threading.Tasks;
 using Vanara.Extensions;
 using Vanara.PInvoke;
 using Windows.Win32.Storage.FileSystem;
@@ -13,6 +16,8 @@ namespace Styletronix
     {
         public static CF_PLACEHOLDER_BASIC_INFO GetPlaceholderInfoBasic(string fullPath, bool isDirectory)
         {
+            Styletronix.Debug.WriteLine("GetPlaceholderInfoBasic: " + fullPath);
+
             using SafeCreateFileForCldApi h = new(fullPath, isDirectory);
 
             if (h.IsInvalid)
@@ -33,6 +38,8 @@ namespace Styletronix
         }
         public static CF_PLACEHOLDER_STANDARD_INFO GetPlaceholderInfoStandard(string fullPath, bool isDirectory)
         {
+            Styletronix.Debug.WriteLine("GetPlaceholderInfoStandard: " + fullPath);
+
             using SafeCreateFileForCldApi h = new(fullPath, isDirectory);
 
             if (h.IsInvalid)
@@ -57,31 +64,18 @@ namespace Styletronix
             CF_PLACEHOLDER_STANDARD_INFO ResultInfo = default;
 
             using SafeAllocCoTaskMem bufferPointerHandler = new(InfoBufferLength);
-            //using var returnedLengtPointerHandler = new SafeAllocCoTaskMem(sizeof(uint));
 
-            //unsafe
-            //{
-            //void* unsafeBuffer = ((IntPtr)bufferPointerHandler).ToPointer();
-            //uint* unsafereturnedLengt = (uint*)((IntPtr)returnedLengtPointerHandler).ToPointer();
-
-            //var ret = CfGetPlaceholderInfo(FileHandle, CF_PLACEHOLDER_INFO_CLASS.CF_PLACEHOLDER_INFO_STANDARD, (IntPtr)unsafeBuffer, (uint)InfoBufferLength, unsafereturnedLengt);
             HRESULT ret = CfGetPlaceholderInfo(FileHandle, CF_PLACEHOLDER_INFO_CLASS.CF_PLACEHOLDER_INFO_STANDARD, bufferPointerHandler, (uint)InfoBufferLength, out uint returnedLength);
 
-            //var returnedLengthSpan = new ReadOnlySpan<byte>(unsafereturnedLengt, sizeof(uint));
-            //UInt32 returnedLength = BitConverter.ToUInt32(returnedLengthSpan.ToArray(), 0);
-
             if (returnedLength > 0)
-            {
                 ResultInfo = Marshal.PtrToStructure<CF_PLACEHOLDER_STANDARD_INFO>(bufferPointerHandler);
-                //var bufferSpan = new ReadOnlySpan<byte>(unsafeBuffer, (int)returnedLength);
-                //ResultInfo = MemoryMarshal.Read<CF_PLACEHOLDER_STANDARD_INFO>(bufferSpan);
-            }
-            //}
 
             return ResultInfo;
         }
         public static CF_PLACEHOLDER_BASIC_INFO GetPlaceholderInfoBasic(HFILE FileHandle)
         {
+            Styletronix.Debug.WriteLine("GetPlaceholderInfoBasic: " + ((IntPtr)FileHandle).ToString());
+
             int InfoBufferLength = 1024;
             CF_PLACEHOLDER_BASIC_INFO ResultInfo = default;
 
@@ -398,5 +392,149 @@ namespace Styletronix
                 }
             }
         }
+        public class AutoDisposeList<T> : List<T>, IDisposable where T : IDisposable
+        {
+            public void Dispose()
+            {
+                foreach (var obj in this)
+                {
+                    obj.Dispose();
+                }
+            }
+        }
+
+        public class CallbackSuspensionHelper : IDisposable
+        {
+            private ConcurrentDictionary<string, int> suspendFileCallbackList = new();
+            private bool disposedValue;
+
+            public class SuspendedValue : IDisposable
+            {
+                private bool disposedValue;
+                private readonly string value;
+                private readonly ConcurrentDictionary<string, int> suspendFileCallbackList;
+
+                public SuspendedValue(string value, ConcurrentDictionary<string, int> suspendFileCallbackList)
+                {
+                    this.value = value;
+                    this.suspendFileCallbackList = suspendFileCallbackList;
+                }
+
+                protected virtual void Dispose(bool disposing)
+                {
+                    if (!disposedValue)
+                    {
+                        if (disposing)
+                        {
+                            var ret = this.suspendFileCallbackList?.AddOrUpdate(value, 1, (k, v) => v--);
+
+                            // TODO: Remove item from dictionary if <= 0
+                            // Currently unknown how to do it thread safe
+
+                            //if (ret <= 0)
+                            //{
+                            //   if ( suspendFileCallbackList.TryRemove(value, out ret))
+                            //    {
+                            //        if (ret >0)
+                            //        {
+                            //            suspendFileCallbackList.AddOrUpdate(value, ret, (k, v) => v++);
+                            //        }
+                            //    }
+                            //}
+                        }
+
+                        disposedValue = true;
+                    }
+                }
+                public void Dispose()
+                {
+                    // Ändern Sie diesen Code nicht. Fügen Sie Bereinigungscode in der Methode "Dispose(bool disposing)" ein.
+                    Dispose(disposing: true);
+                    GC.SuppressFinalize(this);
+                }
+            }
+
+            public bool IsSuspended(string value)
+            {
+                if (!suspendFileCallbackList.TryGetValue(value, out var result)) return false;
+                return result > 0;
+            }
+            public SuspendedValue SetSuspension(string value)
+            {
+                return new SuspendedValue(value, this.suspendFileCallbackList);
+            }
+
+            protected virtual void Dispose(bool disposing)
+            {
+                if (!disposedValue)
+                {
+                    if (disposing)
+                    {
+                        this.suspendFileCallbackList?.Clear();
+                        this.suspendFileCallbackList = null;
+                    }
+
+                    disposedValue = true;
+                }
+            }
+            public void Dispose()
+            {
+                // Ändern Sie diesen Code nicht. Fügen Sie Bereinigungscode in der Methode "Dispose(bool disposing)" ein.
+                Dispose(disposing: true);
+                GC.SuppressFinalize(this);
+            }
+        }
+        //public class SuspensionHelper
+        //{
+        //    private long lockCounter;
+        //    private readonly object lockObject = new();
+        //    private System.Threading.CancellationTokenSource cancellationTokenSource = new();
+
+        //    public void BeginSuspension()
+        //    {
+        //        Debug.WriteLine("BeginSuspension", System.Diagnostics.TraceLevel.Verbose);
+        //        lock (lockObject)
+        //        {
+        //            lockCounter += 1;
+        //            if (cancellationTokenSource.IsCancellationRequested) cancellationTokenSource = new();
+        //        }
+        //    }
+        //    public void EndSuspension()
+        //    {
+        //        Debug.WriteLine("EndSuspension", System.Diagnostics.TraceLevel.Verbose);
+        //        lock (lockObject)
+        //        {
+        //            lockCounter -= 1;
+        //            if (lockCounter < 0) lockCounter = 0;
+        //            Debug.WriteLine("Suspension release", System.Diagnostics.TraceLevel.Verbose);
+        //            if (lockCounter == 0) cancellationTokenSource.Cancel();
+        //        }
+        //    }
+
+        //    public bool IsSuspended()
+        //    {
+        //        lock (lockObject)
+        //        {
+        //            return lockCounter > 0;
+        //        }
+        //    }
+
+        //    public async Task WaitWhileSuspendedAsync()
+        //    {
+        //        if (!IsSuspended()) await Task.CompletedTask;
+
+        //        Debug.WriteLine("WaitWhileSuspendedAsync", System.Diagnostics.TraceLevel.Verbose);
+        //        try
+        //        {
+        //            await Task.Delay(TimeSpan.FromMinutes(4), cancellationTokenSource.Token).ConfigureAwait(false);
+        //        }
+        //        catch (Exception)
+        //        {
+
+        //        }
+
+        //    }
+        //}
+
     }
 }

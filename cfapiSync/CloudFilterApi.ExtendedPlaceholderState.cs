@@ -14,26 +14,28 @@ namespace Styletronix
         public class ExtendedPlaceholderState : IDisposable
         {
             private readonly string _FullPath;
-            private CF_PLACEHOLDER_BASIC_INFO? _PlaceholderInfoBasic;
             private CF_PLACEHOLDER_STANDARD_INFO? _PlaceholderInfoStandard;
             private SafeCreateFileForCldApi _SafeFileHandleForCldApi;
             private WIN32_FIND_DATA _FindData;
 
             public ExtendedPlaceholderState(string fullPath)
             {
+                //Styletronix.Debug.WriteLine("New ExtendedPlaceholderState: " + fullPath, System.Diagnostics.TraceLevel.Verbose);
                 _FullPath = fullPath;
-                Reload();
+
+                using Kernel32.SafeSearchHandle findHandle = Kernel32.FindFirstFile(@"\\?\" + _FullPath, out WIN32_FIND_DATA findData);
+                SetValuesByFindData(findData);
             }
             public ExtendedPlaceholderState(WIN32_FIND_DATA findData, string directory)
             {
+                //Styletronix.Debug.WriteLine("New ExtendedPlaceholderState: " + findData.cFileName, System.Diagnostics.TraceLevel.Verbose);
+
                 if (!string.IsNullOrEmpty(directory)) { _FullPath = directory + "\\" + findData.cFileName; }
                 _FindData = findData;
 
-                PlaceholderState = CfGetPlaceholderStateFromFindData(findData);
-                Attributes = findData.dwFileAttributes;
-                LastWriteTime = findData.ftLastWriteTime.ToDateTime();
+                SetValuesByFindData(findData);
             }
-
+            
             public string FullPath => _FullPath;
 
             public CF_PLACEHOLDER_STATE PlaceholderState;
@@ -41,31 +43,9 @@ namespace Styletronix
             public DateTime LastWriteTime;
             public ulong FileSize;
             public string ETag;
-            // Fake ID because FileID is not usable due to only 1 byte is returned from the System.
+            // Fake ID.
             public string FileId = Guid.NewGuid().ToString();
 
-            public CF_PLACEHOLDER_BASIC_INFO PlaceholderInfoBasic
-            {
-                get
-                {
-                    if (_PlaceholderInfoBasic == null)
-                    {
-                        if (string.IsNullOrEmpty(_FullPath))
-                        {
-                            _PlaceholderInfoBasic = new CF_PLACEHOLDER_BASIC_INFO();
-                        }
-                        else if (!PlaceholderState.HasFlag(CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_PLACEHOLDER))
-                        {
-                            _PlaceholderInfoBasic = new CF_PLACEHOLDER_BASIC_INFO();
-                        }
-                        else
-                        {
-                            _PlaceholderInfoBasic = GetPlaceholderInfoBasic(SafeFileHandleForCldApi);
-                        }
-                    }
-                    return _PlaceholderInfoBasic.Value;
-                }
-            }
             public CF_PLACEHOLDER_STANDARD_INFO PlaceholderInfoStandard
             {
                 get
@@ -82,6 +62,7 @@ namespace Styletronix
                         }
                         else
                         {
+                            Styletronix.Debug.WriteLine("GetPlaceholderInfoStandard: " + FullPath , System.Diagnostics.TraceLevel.Verbose);
                             _PlaceholderInfoStandard = GetPlaceholderInfoStandard(SafeFileHandleForCldApi);
                         }
                     }
@@ -94,7 +75,7 @@ namespace Styletronix
             public GenericResult SetInSyncState(CF_IN_SYNC_STATE inSyncState)
             {
                 if (!IsPlaceholder) { return new GenericResult(NtStatus.STATUS_NOT_A_CLOUD_FILE); }
-                if (PlaceholderInfoBasic.InSyncState == inSyncState) { return new GenericResult(); }
+                if (PlaceholderInfoStandard.InSyncState == inSyncState) { return new GenericResult(); }
 
                 Debug.WriteLine("SetInSyncState " + _FullPath + " " + inSyncState.ToString(), System.Diagnostics.TraceLevel.Info);
 
@@ -102,7 +83,26 @@ namespace Styletronix
 
                 if (res.Succeeded)
                 {
-                    Reload();
+                    //Reload();
+
+                    // Prevent reload by applying results directly to cached values:
+                    if (_PlaceholderInfoStandard != null)
+                    {
+                        var p = _PlaceholderInfoStandard.Value;
+                        p.InSyncState = inSyncState;
+                        _PlaceholderInfoStandard = p;
+                    }
+
+                    if (inSyncState == CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_IN_SYNC)
+                    {
+                        this.PlaceholderState |= CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_IN_SYNC;
+                    }
+                    else
+                    {
+                        this.PlaceholderState ^= CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_IN_SYNC;
+                    }
+                  
+
                     return new GenericResult();
                 }
                 else
@@ -231,7 +231,7 @@ namespace Styletronix
             public GenericResult DehydratePlaceholder(bool setPinStateUnspecified)
             {
                 if (!IsPlaceholder) { return new GenericResult(NtStatus.STATUS_NOT_A_CLOUD_FILE); }
-                if (PlaceholderInfoBasic.PinState == CF_PIN_STATE.CF_PIN_STATE_PINNED) { return new GenericResult(NtStatus.STATUS_CLOUD_FILE_PINNED); }
+                if (PlaceholderInfoStandard.PinState == CF_PIN_STATE.CF_PIN_STATE_PINNED) { return new GenericResult(NtStatus.STATUS_CLOUD_FILE_PINNED); }
 
                 Debug.WriteLine("DehydratePlaceholder " + _FullPath, System.Diagnostics.TraceLevel.Info);
 
@@ -303,14 +303,22 @@ namespace Styletronix
             public bool SetPinState(CF_PIN_STATE state)
             {
                 if (!IsPlaceholder) { return false; }
-                if (((int)PlaceholderInfoBasic.PinState) == ((int)state)) { return true; }
+                if (((int)PlaceholderInfoStandard.PinState) == ((int)state)) { return true; }
 
                 Debug.WriteLine("SetPinState " + _FullPath + " " + state.ToString(), System.Diagnostics.TraceLevel.Info);
                 HRESULT res = CfSetPinState(SafeFileHandleForCldApi, state, CF_SET_PIN_FLAGS.CF_SET_PIN_FLAG_NONE);
 
                 if (res.Succeeded)
                 {
-                    Reload();
+                    //Reload();
+
+                    // Prevent reload by applying results directly to cached values:
+                    if (_PlaceholderInfoStandard != null)
+                    {
+                        var p = _PlaceholderInfoStandard.Value ;
+                        p.PinState = state;
+                        _PlaceholderInfoStandard = p;
+                    }
                 }
                 else
                 {
@@ -351,7 +359,9 @@ namespace Styletronix
 
                 if (res.Succeeded)
                 {
-                    Reload();
+                    //Reload of Placeholder after EnableOnDemandPopulation triggers FETCH_PLACEHOLDERS  
+                    //Reload();
+                    this.PlaceholderState |= CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_PARTIAL;
                 }
                 else
                 {
@@ -431,14 +441,18 @@ namespace Styletronix
             {
                 Styletronix.Debug.WriteLine("Reload Placeholder Data: " + this.FullPath, System.Diagnostics.TraceLevel.Verbose);
                 using Kernel32.SafeSearchHandle findHandle = Kernel32.FindFirstFile(@"\\?\" + _FullPath, out WIN32_FIND_DATA findData);
+                SetValuesByFindData(findData);
+            }
+
+            private void SetValuesByFindData(WIN32_FIND_DATA findData)
+            {
                 PlaceholderState = CfGetPlaceholderStateFromFindData(findData);
                 Attributes = findData.dwFileAttributes;
                 LastWriteTime = findData.ftLastWriteTime.ToDateTime();
-                _PlaceholderInfoBasic = null;
+                _PlaceholderInfoStandard = null;
                 FileSize = findData.FileSize;
                 ETag = "_" + LastWriteTime.ToUniversalTime().Ticks + "_" + FileSize;
             }
-
 
             private bool disposedValue;
             protected virtual void Dispose(bool disposing)
@@ -455,7 +469,6 @@ namespace Styletronix
             }
             public void Dispose()
             {
-                // Ändern Sie diesen Code nicht. Fügen Sie Bereinigungscode in der Methode "Dispose(bool disposing)" ein.
                 Dispose(disposing: true);
                 GC.SuppressFinalize(this);
             }

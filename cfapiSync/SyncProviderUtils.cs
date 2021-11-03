@@ -19,8 +19,6 @@ public class SyncProviderUtils
         public bool isCompleted;
 
         public string Id;
-        //public CldApi.CF_CALLBACK_INFO CallbackInfo;
-        //public CldApi.CF_CALLBACK_PARAMETERS CallbackParameters;
     }
     public class FetchRange
     {
@@ -40,21 +38,6 @@ public class SyncProviderUtils
         public CF_TRANSFER_KEY TransferKey;
         public byte PriorityHint;
     }
-    public class SyncContext
-    {
-        /// <summary>
-        /// Absolute Path to the local Root Folder where the cached files are stored.
-        /// </summary>
-        public string LocalRootFolder;
-
-        public string LocalRootFolderNormalized;
-
-        public CF_CONNECTION_KEY ConnectionKey;
-
-        public IServerFileProvider ServerProvider;
-        public SyncProviderParameters SyncProviderParameter;
-    }
-
 }
 
 

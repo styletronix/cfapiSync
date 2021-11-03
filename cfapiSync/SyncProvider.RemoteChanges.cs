@@ -28,7 +28,6 @@ public partial class SyncProvider : IDisposable
     private async Task ProcessRemoteFileChanged(FileChangedEventArgs e)
     {
         Styletronix.Debug.WriteLine("ProcessRemoteFileChanged: " + e.ChangeType.ToString() + " " + e.Placeholder?.RelativeFileName, System.Diagnostics.TraceLevel.Verbose);
-        //await Task.Delay(2000);
 
         // TODO: Make use of Placeholder data submitted by ServerProvider.
         try
@@ -51,7 +50,7 @@ public partial class SyncProvider : IDisposable
                         }
                         else
                         {
-                            await ChangedDataQueueBlock.SendAsync(localFullPath);
+                            AddFileToChangeQueue(localFullPath,false);
                         }
                         break;
 
@@ -68,20 +67,20 @@ public partial class SyncProvider : IDisposable
                         }
                         else
                         {
-                            await ChangedDataQueueBlock.SendAsync(localFullPath);
+                            AddFileToChangeQueue(localFullPath, false);
                         }
                         break;
 
                     case WatcherChangeTypes.Created:
-                        await ChangedDataQueueBlock.SendAsync(localFullPath);
+                        AddFileToChangeQueue(localFullPath, false);
                         break;
 
                     case WatcherChangeTypes.Changed:
-                        await ChangedDataQueueBlock.SendAsync(localFullPath);
+                        AddFileToChangeQueue(localFullPath, false);
                         break;
 
                     default:
-                        await ChangedDataQueueBlock.SendAsync(GetLocalFullPath(e.Placeholder.RelativeFileName));
+                        AddFileToChangeQueue(GetLocalFullPath(e.Placeholder.RelativeFileName), false);
                         break;
 
                 }

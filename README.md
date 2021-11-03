@@ -9,6 +9,22 @@ Bi-directional synchronization is supported as long as the Server is able to not
 
 There are lot things to do, but at least for lokal folders it seems to be fully functional with sometimes an "uupppsss...."
 
+
+## Short Explanation of the Components
+### SyncProvider
+The SyncProvider is the core function which handles all synchronization logic and monitoring of the local files.
+
+### ServerProvider
+The ServerProvider uses the IServerProvider Interface to communicate with the SyncProvider. The ServerProvider is ued to connect to the cloud. For each cloud type, a new ServerProvider is required.
+
+#### Available ServerProviders
+- Local and UNC Path's supported by FileSystemWatcher.
+
+#### Planned ServerProviders
+- Amazon S3
+- WebDav
+
+
 ### Supported Sources:
 - Local directory
 - UNC Network Path which is supported by FileSystemWatcher.
@@ -29,9 +45,15 @@ There are lot things to do, but at least for lokal folders it seems to be fully 
 - Delay "DELETE" Message from ServerProvider.
 - ServerProvider reports "DELETED" for localy moved files.
 - Add Thumbnail Provider for remote files.
-- Global Progressbar within UI.
 - FullSync needs to validate pinned files / subfolders.
 - FullSync needs to validate local available files in all local available folders.
 - FullSync needs to enable "OnDemandPopulation" for all folders which are localy cached.  
 - Validate if local "MOVE" triggrs a "DELETE / CREATE" Message from Server.
 - .....
+
+
+### Notes on FileSystemWatcher
+To enable realtime Monitoring of changed files on Server. The ServerProvider for local and UNC Paths is using FileSystemWatcher.
+UNC Paths, hostet on Windows can be realtime monitored with FileSystemWatcher. But there are a few exceptions.
+If the UNC Path is a DFS-Path, the realtime Monitoring won't work. In this case, set the UNC Path not to DFS-Path, but to the direct Server path.
+In other projects, I used functions to get the Server path, based on the DFS-Root to set Monitoring to that location. But this is not available in the current impementation of the ServerProvider.

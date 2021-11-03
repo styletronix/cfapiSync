@@ -21,10 +21,24 @@ public partial class ServerProvider : IServerFileProvider
     public event EventHandler<ServerProviderStateChangedEventArgs> ServerProviderStateChanged;
     public event EventHandler<FileChangedEventArgs> FileChanged;
 
-    public SyncProviderUtils.SyncContext SyncContext { get; set; }
+    public SyncContext SyncContext { get; set; }
+    public PreferredSettings PreferredServerProviderSettings
+    {
+        get
+        {
+            return preferredServerProviderSettings;
+        }
+    }
+
     private readonly ServerProviderParams Parameter;
     private ServerProviderStatus lastStatus = ServerProviderStatus.Disconnected;
     private ServerCallback serverCallback;
+    private readonly PreferredSettings preferredServerProviderSettings = new()
+    {
+        AllowPartialUpdate = true,
+        MaxChunkSize = int.MaxValue,
+        MinChunkSize = 4096
+    };
 
     public class ServerProviderParams
     {
@@ -63,7 +77,6 @@ public partial class ServerProvider : IServerFileProvider
 
         return Task.FromResult(genericResult);
     }
-
 
 
     public IReadFileAsync GetNewReadFile() { return new ReadFileAsyncInternal(this); }
@@ -433,6 +446,7 @@ public partial class ServerProvider : IServerFileProvider
                 return Task.FromResult(new WriteFileOpenResult(NtStatus.STATUS_CLOUD_FILE_NETWORK_UNAVAILABLE));
 
             param = e;
+
             var openResult = new WriteFileOpenResult();
 
             // PartialUpdate is done In-Place without temp file.

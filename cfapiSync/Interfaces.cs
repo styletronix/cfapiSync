@@ -2,6 +2,7 @@
 using System.IO;
 using System.Threading.Tasks;
 using static Styletronix.CloudFilterApi;
+using static Vanara.PInvoke.CldApi;
 
 namespace Styletronix.CloudSyncProvider
 {
@@ -70,25 +71,37 @@ namespace Styletronix.CloudSyncProvider
     public class GetFileInfoResult : GenericResult
     {
         public GetFileInfoResult() { }
-        public GetFileInfoResult(NtStatus status) {
+        public GetFileInfoResult(NtStatus status)
+        {
             this.Status = status;
         }
         public Placeholder Placeholder;
     }
-
-    public enum CloudExceptions
+    public class PreferredSettings
     {
-        Offline = 1,
-        FileOrDirectoryNotFound = 2,
-        AccessDenied = 3
+        /// <summary>
+        /// Minimum chunk size for file Up-/Download
+        /// </summary>
+        public int MinChunkSize = 4096;
+        /// <summary>
+        /// Maximum chunk Size for file Up-/Download
+        /// </summary>
+        public int MaxChunkSize = int.MaxValue;
+        /// <summary>
+        /// Allows the SyncProvider to update parts of an existing file instead replacing the entire file.
+        /// ETag is used to validate the file consistence before starting partial updates.
+        /// </summary>
+        public bool AllowPartialUpdate = true;
     }
+
 
     public interface IServerFileProvider
     {
         public event EventHandler<ServerProviderStateChangedEventArgs> ServerProviderStateChanged;
         public event EventHandler<FileChangedEventArgs> FileChanged;
 
-        public SyncProviderUtils.SyncContext SyncContext { get; set; }
+        public SyncContext SyncContext { get; set; }
+        public PreferredSettings PreferredServerProviderSettings { get; }
 
         /// <summary>
         /// Establish a connection to the Server to check Authentication and for receiving realtime Updates.
@@ -137,7 +150,6 @@ namespace Styletronix.CloudSyncProvider
         /// <returns></returns>
         public Task<CreateFileResult> CreateFileAsync(string RelativeFileName, bool isDirectory);
     }
-
     public interface IReadFileAsync : IDisposable, IAsyncDisposable
     {
 
@@ -162,7 +174,6 @@ namespace Styletronix.CloudSyncProvider
 
         public Task<ReadFileCloseResult> CloseAsync();
     }
-
     public interface IWriteFileAsync : IDisposable, IAsyncDisposable
     {
         public UploadMode SupportedUploadModes { get; }
@@ -170,7 +181,6 @@ namespace Styletronix.CloudSyncProvider
         public Task<WriteFileWriteResult> WriteAsync(byte[] buffer, int offsetBuffer, long offset, int count);
         public Task<WriteFileCloseResult> CloseAsync(bool completed);
     }
-
     public interface IFileListAsync : IDisposable, IAsyncDisposable
     {
         public Task<GenericResult> OpenAsync(string RelativeFileName, System.Threading.CancellationToken ctx);
@@ -179,6 +189,7 @@ namespace Styletronix.CloudSyncProvider
 
         public Task<GenericResult> CloseAsync();
     }
+
 
     [Flags]
     public enum UploadMode : short
@@ -201,6 +212,18 @@ namespace Styletronix.CloudSyncProvider
         Created,
         Deleted
     }
+    public enum CloudExceptions
+    {
+        Offline = 1,
+        FileOrDirectoryNotFound = 2,
+        AccessDenied = 3
+    }
+    public enum SyncMode
+    {
+        Local,
+        Full
+    }
+
 
     public class Placeholder : BasicFileInfo
     {
@@ -271,7 +294,6 @@ namespace Styletronix.CloudSyncProvider
     {
         public Placeholder Placeholder;
     }
-
     public class GenericResult
     {
         public GenericResult()
@@ -368,6 +390,43 @@ namespace Styletronix.CloudSyncProvider
             }
         }
     }
+    public class GenericResult<T>: GenericResult
+    {
+        public GenericResult()
+        {
+            Succeeded = true;
+            Status = CloudFilterApi.NtStatus.STATUS_SUCCESS;
+            Message = Status.ToString();
+        }
+        public GenericResult(Exception ex)
+        {
+            SetException(ex);
+        }
+        public GenericResult(CloudExceptions ex)
+        {
+            SetException(ex);
+        }
+        public GenericResult(CloudFilterApi.NtStatus status)
+        {
+            Succeeded = (status == CloudFilterApi.NtStatus.STATUS_SUCCESS);
+            Status = status;
+            Message = Status.ToString();
+        }
+        public GenericResult(int ntStatus)
+        {
+            Status = (CloudFilterApi.NtStatus)ntStatus;
+            Succeeded = (ntStatus == 0);
+            Message = Status.ToString();
+        }
+        public GenericResult(CloudFilterApi.NtStatus status, string message)
+        {
+            Succeeded = (status == CloudFilterApi.NtStatus.STATUS_SUCCESS);
+            Status = status;
+            Message = message;
+        }
+
+        public T Data;
+    }
     public class GetNextResult : GenericResult
     {
         public GetNextResult() { }
@@ -420,5 +479,81 @@ namespace Styletronix.CloudSyncProvider
         public DateTime NextTry;
         public Exception LastException;
         public int RetryCount;
+    }
+
+    public class FileProgress
+    {
+        private long _BytesCompleted;
+        private long _BytesTotal;
+
+        public string relativeFilePath;
+        public short Progress;
+
+        public FileProgress(string relativeFilePath, long fileBytesCompleted, long fileBytesTotal)
+        {
+            this.relativeFilePath = relativeFilePath;
+            this.FileBytesCompleted = fileBytesCompleted;
+            this.FileBytesTotal = fileBytesTotal;
+        }
+
+        public long FileBytesCompleted
+        {
+            get
+            {
+                return _BytesCompleted;
+            }
+            set
+            {
+                _BytesCompleted = value;
+                UpdateProgress();
+            }
+        }
+        public long FileBytesTotal
+        {
+            get
+            {
+                return _BytesTotal;
+            }
+            set
+            {
+                _BytesTotal = value;
+                UpdateProgress();
+            }
+        }
+        private void UpdateProgress()
+        {
+            try
+            {
+                if (FileBytesTotal == 0)
+                {
+                    Progress = 0;
+                }
+                else
+                {
+                    var x = (short)(((float)FileBytesCompleted / (float)FileBytesTotal) * 100);
+                    if (x > 100) x = 100;
+
+                    Progress = x;
+                }
+            }
+            catch (Exception)
+            {
+                Progress = 0;
+            }
+        }
+    }
+    public class SyncContext
+    {
+        /// <summary>
+        /// Absolute Path to the local Root Folder where the cached files are stored.
+        /// </summary>
+        public string LocalRootFolder;
+
+        public string LocalRootFolderNormalized;
+
+        public CF_CONNECTION_KEY ConnectionKey;
+
+        public IServerFileProvider ServerProvider;
+        public SyncProviderParameters SyncProviderParameter;
     }
 }
