@@ -35,7 +35,7 @@ namespace Styletronix
 
                 SetValuesByFindData(findData);
             }
-            
+
             public string FullPath => _FullPath;
 
             public CF_PLACEHOLDER_STATE PlaceholderState;
@@ -62,7 +62,7 @@ namespace Styletronix
                         }
                         else
                         {
-                            Styletronix.Debug.WriteLine("GetPlaceholderInfoStandard: " + FullPath , System.Diagnostics.TraceLevel.Verbose);
+                            Styletronix.Debug.WriteLine("GetPlaceholderInfoStandard: " + FullPath, System.Diagnostics.TraceLevel.Verbose);
                             _PlaceholderInfoStandard = GetPlaceholderInfoStandard(SafeFileHandleForCldApi);
                         }
                     }
@@ -88,20 +88,20 @@ namespace Styletronix
                     // Prevent reload by applying results directly to cached values:
                     if (_PlaceholderInfoStandard != null)
                     {
-                        var p = _PlaceholderInfoStandard.Value;
+                        CF_PLACEHOLDER_STANDARD_INFO p = _PlaceholderInfoStandard.Value;
                         p.InSyncState = inSyncState;
                         _PlaceholderInfoStandard = p;
                     }
 
                     if (inSyncState == CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_IN_SYNC)
                     {
-                        this.PlaceholderState |= CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_IN_SYNC;
+                        PlaceholderState |= CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_IN_SYNC;
                     }
                     else
                     {
-                        this.PlaceholderState ^= CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_IN_SYNC;
+                        PlaceholderState ^= CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_IN_SYNC;
                     }
-                  
+
 
                     return new GenericResult();
                 }
@@ -142,10 +142,10 @@ namespace Styletronix
                 CF_CONVERT_FLAGS flags = isExcluded ? CF_CONVERT_FLAGS.CF_CONVERT_FLAG_MARK_IN_SYNC : CF_CONVERT_FLAGS.CF_CONVERT_FLAG_ENABLE_ON_DEMAND_POPULATION;
 
                 HRESULT res;
-                int fileIDSize = this.FileId.Length * Marshal.SizeOf(this.FileId[0]);
+                int fileIDSize = FileId.Length * Marshal.SizeOf(FileId[0]);
                 unsafe
                 {
-                    fixed (void* fileID = this.FileId)
+                    fixed (void* fileID = FileId)
                     {
                         long* usnPtr = (long*)0;
                         res = CfConvertToPlaceholder(fHandle, (IntPtr)fileID, (uint)fileIDSize, flags, out long usn);
@@ -315,7 +315,7 @@ namespace Styletronix
                     // Prevent reload by applying results directly to cached values:
                     if (_PlaceholderInfoStandard != null)
                     {
-                        var p = _PlaceholderInfoStandard.Value ;
+                        CF_PLACEHOLDER_STANDARD_INFO p = _PlaceholderInfoStandard.Value;
                         p.PinState = state;
                         _PlaceholderInfoStandard = p;
                     }
@@ -346,12 +346,12 @@ namespace Styletronix
 
                 HRESULT res;
 
-                int fileIDSize = this.FileId.Length * Marshal.SizeOf(this.FileId[0]);
+                int fileIDSize = FileId.Length * Marshal.SizeOf(FileId[0]);
                 long usn = 0;
 
                 unsafe
                 {
-                    fixed (void* fileID = this.FileId)
+                    fixed (void* fileID = FileId)
                     {
                         res = CfUpdatePlaceholder(fHandle, new CF_FS_METADATA(), (IntPtr)fileID, (uint)fileIDSize, null, 0, CF_UPDATE_FLAGS.CF_UPDATE_FLAG_ENABLE_ON_DEMAND_POPULATION, ref usn);
                     }
@@ -361,7 +361,7 @@ namespace Styletronix
                 {
                     //Reload of Placeholder after EnableOnDemandPopulation triggers FETCH_PLACEHOLDERS  
                     //Reload();
-                    this.PlaceholderState |= CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_PARTIAL;
+                    PlaceholderState |= CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_PARTIAL;
                 }
                 else
                 {
@@ -390,19 +390,19 @@ namespace Styletronix
                     return new GenericResult(NtStatus.STATUS_CLOUD_FILE_IN_USE);
                 }
 
-                int fileIDSize = this.FileId.Length * Marshal.SizeOf(this.FileId[0]);
+                int fileIDSize = FileId.Length * Marshal.SizeOf(FileId[0]);
                 long usn = 0;
 
                 unsafe
                 {
-                    fixed (void* fileID = this.FileId)
+                    fixed (void* fileID = FileId)
                     {
                         CF_FILE_RANGE[] dehydrateRanges = null;
                         uint dehydrateRangesCount = 0;
                         if (markDataInvalid)
                         {
                             dehydrateRanges = new CF_FILE_RANGE[1];
-                            dehydrateRanges[0] = new CF_FILE_RANGE() { StartingOffset = 0, Length = (long)this.FileSize };
+                            dehydrateRanges[0] = new CF_FILE_RANGE() { StartingOffset = 0, Length = (long)FileSize };
                             dehydrateRangesCount = 1;
                         }
                         HRESULT res1 = CfUpdatePlaceholder(fHandle, CreateFSMetaData(placeholder), (IntPtr)fileID, (uint)fileIDSize, dehydrateRanges, dehydrateRangesCount, cF_UPDATE_FLAGS, ref usn);
@@ -439,7 +439,7 @@ namespace Styletronix
 
             public void Reload()
             {
-                Styletronix.Debug.WriteLine("Reload Placeholder Data: " + this.FullPath, System.Diagnostics.TraceLevel.Verbose);
+                Styletronix.Debug.WriteLine("Reload Placeholder Data: " + FullPath, System.Diagnostics.TraceLevel.Verbose);
                 using Kernel32.SafeSearchHandle findHandle = Kernel32.FindFirstFile(@"\\?\" + _FullPath, out WIN32_FIND_DATA findData);
                 SetValuesByFindData(findData);
             }

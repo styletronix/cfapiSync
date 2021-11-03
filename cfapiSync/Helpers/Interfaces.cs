@@ -1,5 +1,6 @@
 ﻿using System;
 using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
 using static Styletronix.CloudFilterApi;
 using static Vanara.PInvoke.CldApi;
@@ -19,11 +20,11 @@ namespace Styletronix.CloudSyncProvider
         public ReadFileOpenResult() { }
         public ReadFileOpenResult(Placeholder placeholder)
         {
-            this.Placeholder = placeholder;
+            Placeholder = placeholder;
         }
         public ReadFileOpenResult(NtStatus status)
         {
-            this.Status = status;
+            Status = status;
         }
 
         public Placeholder Placeholder;
@@ -33,11 +34,11 @@ namespace Styletronix.CloudSyncProvider
         public ReadFileReadResult() { }
         public ReadFileReadResult(int bytesRead)
         {
-            this.BytesRead = bytesRead;
+            BytesRead = bytesRead;
         }
         public ReadFileReadResult(NtStatus status)
         {
-            this.Status = status;
+            Status = status;
         }
 
         public int BytesRead;
@@ -51,11 +52,11 @@ namespace Styletronix.CloudSyncProvider
         public WriteFileOpenResult() { }
         public WriteFileOpenResult(Placeholder placeholder)
         {
-            this.Placeholder = placeholder;
+            Placeholder = placeholder;
         }
         public WriteFileOpenResult(NtStatus status)
         {
-            this.Status = status;
+            Status = status;
         }
         public Placeholder Placeholder;
     }
@@ -73,7 +74,7 @@ namespace Styletronix.CloudSyncProvider
         public GetFileInfoResult() { }
         public GetFileInfoResult(NtStatus status)
         {
-            this.Status = status;
+            Status = status;
         }
         public Placeholder Placeholder;
     }
@@ -371,14 +372,11 @@ namespace Styletronix.CloudSyncProvider
         private CloudFilterApi.NtStatus _status;
         public CloudFilterApi.NtStatus Status
         {
-            get
-            {
-                return this._status;
-            }
+            get => _status;
             set
             {
-                this._status = value;
-                this.Succeeded = (this._status == CloudFilterApi.NtStatus.STATUS_SUCCESS);
+                _status = value;
+                Succeeded = (_status == CloudFilterApi.NtStatus.STATUS_SUCCESS);
             }
         }
 
@@ -390,7 +388,7 @@ namespace Styletronix.CloudSyncProvider
             }
         }
     }
-    public class GenericResult<T>: GenericResult
+    public class GenericResult<T> : GenericResult
     {
         public GenericResult()
         {
@@ -432,7 +430,7 @@ namespace Styletronix.CloudSyncProvider
         public GetNextResult() { }
         public GetNextResult(CloudFilterApi.NtStatus status)
         {
-            this.Status = status;
+            Status = status;
         }
         public Placeholder Placeholder;
     }
@@ -454,13 +452,13 @@ namespace Styletronix.CloudSyncProvider
         public ServerProviderStateChangedEventArgs() { }
         public ServerProviderStateChangedEventArgs(ServerProviderStatus status)
         {
-            this.Status = status;
-            this.Message = status.ToString();
+            Status = status;
+            Message = status.ToString();
         }
         public ServerProviderStateChangedEventArgs(ServerProviderStatus status, string message)
         {
-            this.Status = status;
-            this.Message = message;
+            Status = status;
+            Message = message;
         }
 
         public string Message;
@@ -492,16 +490,13 @@ namespace Styletronix.CloudSyncProvider
         public FileProgress(string relativeFilePath, long fileBytesCompleted, long fileBytesTotal)
         {
             this.relativeFilePath = relativeFilePath;
-            this.FileBytesCompleted = fileBytesCompleted;
-            this.FileBytesTotal = fileBytesTotal;
+            FileBytesCompleted = fileBytesCompleted;
+            FileBytesTotal = fileBytesTotal;
         }
 
         public long FileBytesCompleted
         {
-            get
-            {
-                return _BytesCompleted;
-            }
+            get => _BytesCompleted;
             set
             {
                 _BytesCompleted = value;
@@ -510,10 +505,7 @@ namespace Styletronix.CloudSyncProvider
         }
         public long FileBytesTotal
         {
-            get
-            {
-                return _BytesTotal;
-            }
+            get => _BytesTotal;
             set
             {
                 _BytesTotal = value;
@@ -530,8 +522,11 @@ namespace Styletronix.CloudSyncProvider
                 }
                 else
                 {
-                    var x = (short)(((float)FileBytesCompleted / (float)FileBytesTotal) * 100);
-                    if (x > 100) x = 100;
+                    short x = (short)((FileBytesCompleted / (float)FileBytesTotal) * 100);
+                    if (x > 100)
+                    {
+                        x = 100;
+                    }
 
                     Progress = x;
                 }
@@ -556,4 +551,40 @@ namespace Styletronix.CloudSyncProvider
         public IServerFileProvider ServerProvider;
         public SyncProviderParameters SyncProviderParameter;
     }
+
+    public class DataActions
+    {
+        public long FileOffset;
+        public long Length;
+        public string NormalizedPath;
+        public CF_TRANSFER_KEY TransferKey;
+        public CF_REQUEST_KEY RequestKey;
+        public byte PriorityHint;
+        public CancellationTokenSource CancellationTokenSource;
+        public Guid guid = Guid.NewGuid();
+
+        public bool isCompleted;
+
+        public string Id;
+    }
+    public class FetchRange
+    {
+        public FetchRange() { }
+        public FetchRange(DataActions data)
+        {
+            NormalizedPath = data.NormalizedPath;
+            PriorityHint = data.PriorityHint;
+            RangeStart = data.FileOffset;
+            RangeEnd = data.FileOffset + data.Length;
+            TransferKey = data.TransferKey;
+        }
+
+        public long RangeStart;
+        public long RangeEnd;
+        public string NormalizedPath;
+        public CF_TRANSFER_KEY TransferKey;
+        public byte PriorityHint;
+    }
+
+   
 }

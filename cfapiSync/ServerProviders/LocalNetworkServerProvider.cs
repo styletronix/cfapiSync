@@ -5,9 +5,9 @@ using System.Threading;
 using System.Threading.Tasks;
 using static Styletronix.CloudFilterApi;
 
-public partial class ServerProvider : IServerFileProvider
+public partial class LocalNetworkServerProvider : IServerFileProvider
 {
-    public ServerProvider(string ServerPath)
+    public LocalNetworkServerProvider(string ServerPath)
     {
         Parameter = new ServerProviderParams()
         {
@@ -22,13 +22,7 @@ public partial class ServerProvider : IServerFileProvider
     public event EventHandler<FileChangedEventArgs> FileChanged;
 
     public SyncContext SyncContext { get; set; }
-    public PreferredSettings PreferredServerProviderSettings
-    {
-        get
-        {
-            return preferredServerProviderSettings;
-        }
-    }
+    public PreferredSettings PreferredServerProviderSettings => preferredServerProviderSettings;
 
     private readonly ServerProviderParams Parameter;
     private ServerProviderStatus lastStatus = ServerProviderStatus.Disconnected;
@@ -51,7 +45,7 @@ public partial class ServerProvider : IServerFileProvider
 
     public Task<GenericResult> Connect()
     {
-        var genericResult = new GenericResult();
+        GenericResult genericResult = new GenericResult();
 
         try
         {
@@ -59,17 +53,21 @@ public partial class ServerProvider : IServerFileProvider
         }
         catch (Exception) { }
 
-        if (!this.CheckProviderStatus())
+        if (!CheckProviderStatus())
+        {
             genericResult.Status = NtStatus.STATUS_CLOUD_FILE_NETWORK_UNAVAILABLE;
+        }
 
         if (serverCallback == null)
+        {
             serverCallback = new ServerCallback(this);
+        }
 
         return Task.FromResult(genericResult);
     }
     public Task<GenericResult> Disconnect()
     {
-        var genericResult = new GenericResult();
+        GenericResult genericResult = new GenericResult();
 
         serverCallback.fileSystemWatcher.EnableRaisingEvents = false;
         serverCallback?.Dispose();
@@ -86,7 +84,7 @@ public partial class ServerProvider : IServerFileProvider
 
     public Task<DeleteFileResult> DeleteFileAsync(string RelativeFileName, bool isDirectory)
     {
-        var deleteFileResult = new DeleteFileResult();
+        DeleteFileResult deleteFileResult = new DeleteFileResult();
 
         try
         {
@@ -114,7 +112,7 @@ public partial class ServerProvider : IServerFileProvider
         string fullPath = Path.Combine(Parameter.ServerPath, RelativeFileName);
         string fullPathDestination = Path.Combine(Parameter.ServerPath, RelativeDestination);
 
-        var moveFileResult = new MoveFileResult();
+        MoveFileResult moveFileResult = new MoveFileResult();
 
         try
         {
@@ -136,7 +134,7 @@ public partial class ServerProvider : IServerFileProvider
     }
     public Task<GetFileInfoResult> GetFileInfo(string RelativeFileName, bool isDirectory)
     {
-        var getFileInfoResult = new GetFileInfoResult();
+        GetFileInfoResult getFileInfoResult = new GetFileInfoResult();
 
         string fullPath = Path.Combine(Parameter.ServerPath, RelativeFileName);
 
@@ -145,12 +143,16 @@ public partial class ServerProvider : IServerFileProvider
             if (isDirectory)
             {
                 if (!Directory.Exists(fullPath))
+                {
                     return Task.FromResult(new GetFileInfoResult(NtStatus.STATUS_NOT_A_CLOUD_FILE));
+                }
             }
             else
             {
                 if (!File.Exists(fullPath))
+                {
                     return Task.FromResult(new GetFileInfoResult(NtStatus.STATUS_NOT_A_CLOUD_FILE));
+                }
             }
 
             getFileInfoResult.Placeholder = new Placeholder(fullPath);
@@ -164,7 +166,7 @@ public partial class ServerProvider : IServerFileProvider
     }
     public Task<CreateFileResult> CreateFileAsync(string RelativeFileName, bool isDirectory)
     {
-        var createFileResult = new CreateFileResult();
+        CreateFileResult createFileResult = new CreateFileResult();
 
         string fullPath = Path.Combine(Parameter.ServerPath, RelativeFileName);
 
@@ -173,7 +175,9 @@ public partial class ServerProvider : IServerFileProvider
             if (isDirectory)
             {
                 if (!Directory.Exists(fullPath))
+                {
                     Directory.CreateDirectory(fullPath);
+                }
             }
             else
             {
@@ -213,12 +217,16 @@ public partial class ServerProvider : IServerFileProvider
         if (isDirectory)
         {
             if (Directory.Exists(fullPath))
+            {
                 Directory.Move(fullPath, recyclePath);
+            }
         }
         else
         {
             if (File.Exists(fullPath))
+            {
                 File.Move(fullPath, recyclePath);
+            }
         }
     }
     internal void DeleteOrMoveToRecycleBin(string relativePath, bool isDirectory)
@@ -244,60 +252,69 @@ public partial class ServerProvider : IServerFileProvider
     internal bool CheckProviderStatus()
     {
         // Emulate "Disconnected / Offline" if ServerPath not found
-        var isOnline = Directory.Exists(this.Parameter.ServerPath);
+        bool isOnline = Directory.Exists(Parameter.ServerPath);
 
-        this.SetProviderStatus(isOnline ? ServerProviderStatus.Connected : ServerProviderStatus.Disconnected);
+        SetProviderStatus(isOnline ? ServerProviderStatus.Connected : ServerProviderStatus.Disconnected);
 
         return isOnline;
     }
     internal void SetProviderStatus(ServerProviderStatus status)
     {
-        if (this.lastStatus != status)
+        if (lastStatus != status)
         {
-            this.RaiseServerProviderStateChanged(new ServerProviderStateChangedEventArgs(status));
-            this.lastStatus = status;
+            RaiseServerProviderStateChanged(new ServerProviderStateChangedEventArgs(status));
+            lastStatus = status;
         }
     }
     internal string GetRelativePath(string fullPath)
     {
-        if (!fullPath.StartsWith(this.Parameter.ServerPath, StringComparison.CurrentCultureIgnoreCase)) throw new Exception("File not part of Sync Root");
-        if (fullPath.Length == this.Parameter.ServerPath.Length) return "";
+        if (!fullPath.StartsWith(Parameter.ServerPath, StringComparison.CurrentCultureIgnoreCase))
+        {
+            throw new Exception("File not part of Sync Root");
+        }
 
-        return fullPath.Remove(0, this.Parameter.ServerPath.Length + 1);
+        if (fullPath.Length == Parameter.ServerPath.Length)
+        {
+            return "";
+        }
+
+        return fullPath.Remove(0, Parameter.ServerPath.Length + 1);
     }
 
     protected virtual void RaiseServerProviderStateChanged(ServerProviderStateChangedEventArgs e)
     {
-        this.ServerProviderStateChanged?.Invoke(this, e);
+        ServerProviderStateChanged?.Invoke(this, e);
     }
     protected virtual void RaiseFileChanged(FileChangedEventArgs e)
     {
-        this.FileChanged?.Invoke(this, e);
+        FileChanged?.Invoke(this, e);
     }
 
 
     internal class ReadFileAsyncInternal : IReadFileAsync
     {
-        private readonly ServerProvider provider;
+        private readonly LocalNetworkServerProvider provider;
         private FileStream fileStream;
         private OpenAsyncParams openAsyncParams;
-        public ReadFileAsyncInternal(ServerProvider provider)
+        public ReadFileAsyncInternal(LocalNetworkServerProvider provider)
         {
             this.provider = provider;
         }
 
         public Task<ReadFileOpenResult> OpenAsync(OpenAsyncParams e)
         {
-            if (!this.provider.CheckProviderStatus())
+            if (!provider.CheckProviderStatus())
+            {
                 return Task.FromResult(new ReadFileOpenResult(NtStatus.STATUS_CLOUD_FILE_NETWORK_UNAVAILABLE));
+            }
 
             openAsyncParams = e;
-            var openResult = new ReadFileOpenResult();
+            ReadFileOpenResult openResult = new ReadFileOpenResult();
 
-            string fullPath = Path.Combine(this.provider.Parameter.ServerPath, e.RelativeFileName);
+            string fullPath = Path.Combine(provider.Parameter.ServerPath, e.RelativeFileName);
 
             // Simulate "Offline" if Serverfolder not found.
-            if (!Directory.Exists(this.provider.Parameter.ServerPath))
+            if (!Directory.Exists(provider.Parameter.ServerPath))
             {
                 openResult.SetException(CloudExceptions.Offline);
                 goto skip;
@@ -321,15 +338,17 @@ public partial class ServerProvider : IServerFileProvider
 
         public async Task<ReadFileReadResult> ReadAsync(byte[] buffer, int offsetBuffer, long offset, int count)
         {
-            if (!this.provider.CheckProviderStatus())
+            if (!provider.CheckProviderStatus())
+            {
                 return new ReadFileReadResult(NtStatus.STATUS_CLOUD_FILE_NETWORK_UNAVAILABLE);
+            }
 
-            var readResult = new ReadFileReadResult();
+            ReadFileReadResult readResult = new ReadFileReadResult();
 
             try
             {
                 fileStream.Position = offset;
-                readResult.BytesRead = await fileStream.ReadAsync(buffer, offsetBuffer, count, this.openAsyncParams.CancellationToken);
+                readResult.BytesRead = await fileStream.ReadAsync(buffer, offsetBuffer, count, openAsyncParams.CancellationToken);
             }
             catch (Exception ex)
             {
@@ -341,7 +360,7 @@ public partial class ServerProvider : IServerFileProvider
 
         public Task<ReadFileCloseResult> CloseAsync()
         {
-            var closeResult = new ReadFileCloseResult();
+            ReadFileCloseResult closeResult = new ReadFileCloseResult();
 
             try
             {
@@ -427,12 +446,12 @@ public partial class ServerProvider : IServerFileProvider
     internal class WriteFileAsyncInternal : IWriteFileAsync
     {
         private OpenAsyncParams param;
-        private readonly ServerProvider provider;
+        private readonly LocalNetworkServerProvider provider;
         private FileStream fileStream;
         private string fullPath;
         private string tempFile;
 
-        public WriteFileAsyncInternal(ServerProvider provider)
+        public WriteFileAsyncInternal(LocalNetworkServerProvider provider)
         {
             this.provider = provider;
         }
@@ -442,19 +461,21 @@ public partial class ServerProvider : IServerFileProvider
                 UploadMode.FullFile | UploadMode.PartialUpdate;
         public Task<WriteFileOpenResult> OpenAsync(OpenAsyncParams e)
         {
-            if (!this.provider.CheckProviderStatus())
+            if (!provider.CheckProviderStatus())
+            {
                 return Task.FromResult(new WriteFileOpenResult(NtStatus.STATUS_CLOUD_FILE_NETWORK_UNAVAILABLE));
+            }
 
             param = e;
 
-            var openResult = new WriteFileOpenResult();
+            WriteFileOpenResult openResult = new WriteFileOpenResult();
 
             // PartialUpdate is done In-Place without temp file.
-            if (e.mode == UploadMode.PartialUpdate) { this.provider.Parameter.UseTempFilesForUpload = false; }
+            if (e.mode == UploadMode.PartialUpdate) { provider.Parameter.UseTempFilesForUpload = false; }
 
             try
             {
-                fullPath = Path.Combine(this.provider.Parameter.ServerPath, param.RelativeFileName);
+                fullPath = Path.Combine(provider.Parameter.ServerPath, param.RelativeFileName);
 
                 if (!Directory.Exists(Path.GetDirectoryName(fullPath)))
                 {
@@ -463,7 +484,7 @@ public partial class ServerProvider : IServerFileProvider
 
                 tempFile = Path.GetDirectoryName(fullPath) + @"\$_" + Path.GetFileName(fullPath);
 
-                var fileMode = param.mode switch
+                FileMode fileMode = param.mode switch
                 {
                     UploadMode.FullFile => FileMode.Create,
                     UploadMode.Resume => FileMode.Open,
@@ -473,7 +494,7 @@ public partial class ServerProvider : IServerFileProvider
 
                 // Resume currently not implemented (Verification of file integrity not implemented)
 
-                if (this.provider.Parameter.UseTempFilesForUpload)
+                if (provider.Parameter.UseTempFilesForUpload)
                 {
                     fileStream = new FileStream(tempFile, fileMode, FileAccess.Write, FileShare.None);
                 }
@@ -499,7 +520,7 @@ public partial class ServerProvider : IServerFileProvider
 
         public async Task<WriteFileWriteResult> WriteAsync(byte[] buffer, int offsetBuffer, long offset, int count)
         {
-            var writeResult = new WriteFileWriteResult();
+            WriteFileWriteResult writeResult = new WriteFileWriteResult();
 
             try
             {
@@ -516,7 +537,7 @@ public partial class ServerProvider : IServerFileProvider
 
         public async Task<WriteFileCloseResult> CloseAsync(bool isCompleted)
         {
-            var closeResult = new WriteFileCloseResult();
+            WriteFileCloseResult closeResult = new WriteFileCloseResult();
 
             try
             {
@@ -525,8 +546,10 @@ public partial class ServerProvider : IServerFileProvider
                 isClosed = true;
 
                 string pFile = fullPath;
-                if (this.provider.Parameter.UseTempFilesForUpload)
+                if (provider.Parameter.UseTempFilesForUpload)
+                {
                     pFile = tempFile;
+                }
 
                 try
                 {
@@ -542,13 +565,13 @@ public partial class ServerProvider : IServerFileProvider
 
                 if (isCompleted)
                 {
-                    if (this.provider.Parameter.UseTempFilesForUpload)
+                    if (provider.Parameter.UseTempFilesForUpload)
                     {
                         if (File.Exists(fullPath))
                         {
-                            if (this.provider.Parameter.UseRecycleBinForChangedFiles)
+                            if (provider.Parameter.UseRecycleBinForChangedFiles)
                             {
-                                this.provider.MoveToRecycleBin(param.RelativeFileName, false);
+                                provider.MoveToRecycleBin(param.RelativeFileName, false);
                             }
                             else
                             {
@@ -642,12 +665,12 @@ public partial class ServerProvider : IServerFileProvider
     }
     internal class FileListAsyncInternal : IFileListAsync
     {
-        private readonly ServerProvider provider;
+        private readonly LocalNetworkServerProvider provider;
         private readonly CancellationTokenSource ctx = new();
         private readonly System.Collections.Concurrent.BlockingCollection<Placeholder> infoList = new();
         private readonly GenericResult finalStatus = new();
 
-        public FileListAsyncInternal(ServerProvider provider)
+        public FileListAsyncInternal(LocalNetworkServerProvider provider)
         {
             this.provider = provider;
         }
@@ -655,33 +678,39 @@ public partial class ServerProvider : IServerFileProvider
         public Task<GenericResult> OpenAsync(string relativeFileName, CancellationToken cancellationToken)
         {
             if (!provider.CheckProviderStatus())
+            {
                 return Task.FromResult(new GenericResult(NtStatus.STATUS_CLOUD_FILE_NETWORK_UNAVAILABLE));
+            }
 
-            var fullPath = Path.Combine(provider.Parameter.ServerPath, relativeFileName);
+            string fullPath = Path.Combine(provider.Parameter.ServerPath, relativeFileName);
 
             cancellationToken.Register(() => { ctx.Cancel(); });
-            var tctx = ctx.Token;
+            CancellationToken tctx = ctx.Token;
 
-            var directory = new DirectoryInfo(fullPath);
+            DirectoryInfo directory = new DirectoryInfo(fullPath);
 
             if (!directory.Exists)
+            {
                 return Task.FromResult(new GenericResult(NtStatus.STATUS_NOT_A_CLOUD_FILE));
+            }
 
             Task.Run(() =>
             {
                 try
                 {
-                    foreach (var fileSystemInfo in directory.EnumerateFileSystemInfos())
+                    foreach (FileSystemInfo fileSystemInfo in directory.EnumerateFileSystemInfos())
                     {
                         tctx.ThrowIfCancellationRequested();
 
                         if (!fileSystemInfo.Name.StartsWith(@"$"))
+                        {
                             infoList.Add(new Placeholder(fileSystemInfo));
+                        }
                     }
                 }
                 catch (Exception ex)
                 {
-                    this.finalStatus.SetException(ex);
+                    finalStatus.SetException(ex);
                 }
                 finally
                 {
@@ -697,12 +726,14 @@ public partial class ServerProvider : IServerFileProvider
         {
             return Task.Run(GetNextResult () =>
             {
-                var getNextResult = new GetNextResult();
+                GetNextResult getNextResult = new GetNextResult();
 
                 try
                 {
                     if (!provider.CheckProviderStatus())
+                    {
                         return new GetNextResult(NtStatus.STATUS_CLOUD_FILE_NETWORK_UNAVAILABLE);
+                    }
 
                     if (infoList.TryTake(out Placeholder item, -1, ctx.Token))
                     {
@@ -719,7 +750,7 @@ public partial class ServerProvider : IServerFileProvider
                 catch (Exception ex)
                 {
                     getNextResult.SetException(ex);
-                    this.finalStatus.SetException(ex);
+                    finalStatus.SetException(ex);
                 }
 
                 return getNextResult;
@@ -731,12 +762,12 @@ public partial class ServerProvider : IServerFileProvider
             if (!infoList.IsAddingCompleted)
             {
                 infoList.CompleteAdding();
-                this.finalStatus.Status = Styletronix.CloudFilterApi.NtStatus.STATUS_CLOUD_FILE_REQUEST_ABORTED;
+                finalStatus.Status = Styletronix.CloudFilterApi.NtStatus.STATUS_CLOUD_FILE_REQUEST_ABORTED;
             }
 
             closed = true;
 
-            return Task.FromResult(this.finalStatus);
+            return Task.FromResult(finalStatus);
         }
 
         #region "Dispose"
@@ -750,8 +781,8 @@ public partial class ServerProvider : IServerFileProvider
             {
                 if (disposing)
                 {
-                    this.ctx?.Cancel();
-                    this.infoList?.Dispose();
+                    ctx?.Cancel();
+                    infoList?.Dispose();
                 }
                 disposedValue = true;
             }

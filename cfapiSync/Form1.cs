@@ -13,16 +13,12 @@ namespace ClassLibrary1
         public Form1()
         {
             InitializeComponent();
-            using var key = Microsoft.Win32.RegistryKey.OpenBaseKey(Microsoft.Win32.RegistryHive.CurrentUser, Microsoft.Win32.RegistryView.Default);
+           
+            textBox_serverPath.Text = SyncProviderUtils.GetUserSetting("ServerPath", "Provider\\1", @"\\privatserver01.ama.local\Dokumente$").ToString();
+            textBox_localPath.Text = SyncProviderUtils.GetUserSetting("LocalPath", "Provider\\1", Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) + @"\VirtualTest").ToString();
+            textBox_Caption.Text = SyncProviderUtils.GetUserSetting("Caption", "Provider\\1", @"CfapiSync").ToString();
 
-            this.textBox_serverPath.Text = SyncProviderUtils.GetUserSetting("ServerPath", "Provider\\1", @"\\privatserver01.ama.local\Dokumente$").ToString();
-            this.textBox_localPath.Text = SyncProviderUtils.GetUserSetting ("LocalPath", "Provider\\1", Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) + @"\VirtualTest").ToString();
-            this.textBox_Caption.Text = SyncProviderUtils.GetUserSetting("Caption", "Provider\\1", @"CfapiSync").ToString();
-
-
-            key.Close();
-
-            refreshUITimer = new(RefreshUITimerCallback, null, 1000, 200);
+            refreshUITimer = new(RefreshUITimerCallback, null, 1000, 500);
         }
 
         private void RefreshUITimerCallback(object objectState)
@@ -30,17 +26,17 @@ namespace ClassLibrary1
             refreshUITimer.Change(System.Threading.Timeout.Infinite, System.Threading.Timeout.Infinite);
             try
             {
-                this.Invoke(() =>
+                Invoke(() =>
                           {
-                              this.label_QueueCount.Text = QueueStatus;
-                              this.progressBar1.Value = Progress;
+                              label_QueueCount.Text = QueueStatus;
+                              progressBar1.Value = Progress;
 
-                              this.textBox1.SuspendLayout();
+                              textBox1.SuspendLayout();
                               while (MessageQueue.TryDequeue(out string message))
                               {
-                                  this.textBox1.AppendText(message + "\r\n");
+                                  textBox1.AppendText(message + "\r\n");
                               }
-                              this.textBox1.ResumeLayout();
+                              textBox1.ResumeLayout();
                           });
             }
             finally
@@ -62,22 +58,22 @@ namespace ClassLibrary1
 
         private void InitProvider()
         {
-            this.textBox_localPath.Enabled = false;
-            this.textBox_serverPath.Enabled = false;
-            this.textBox_Caption.Enabled = false;
+            textBox_localPath.Enabled = false;
+            textBox_serverPath.Enabled = false;
+            textBox_Caption.Enabled = false;
 
             if (SyncProvider == null)
             {
-                var param = new SyncProviderParameters()
+                SyncProviderParameters param = new SyncProviderParameters()
                 {
                     ProviderInfo = new BasicSyncProviderInfo()
                     {
                         ProviderId = Guid.Parse(@"fdf0b5bb-be08-4544-b6f6-fa954e869a87"),  // ProviderID must be unique for each Application
-                        ProviderName = this.textBox_Caption.Text,
+                        ProviderName = textBox_Caption.Text,
                         ProviderVersion = Application.ProductVersion
                     },
-                    LocalDataPath = this.textBox_localPath.Text,
-                    ServerProvider = new ServerProvider(this.textBox_serverPath.Text)
+                    LocalDataPath = textBox_localPath.Text,
+                    ServerProvider = new LocalNetworkServerProvider(textBox_serverPath.Text)
                 };
 
                 SyncProvider = new SyncProvider(param);
@@ -88,11 +84,11 @@ namespace ClassLibrary1
 
         private string QueueStatus = "";
         private short Progress;
-        private System.Collections.Concurrent.ConcurrentQueue<string> MessageQueue = new();
+        private readonly System.Collections.Concurrent.ConcurrentQueue<string> MessageQueue = new();
 
         private void SyncProvider_QueuedItemsCountChanged(object sender, int e)
         {
-            this.QueueStatus = e.ToString();
+            QueueStatus = e.ToString();
         }
         private void SyncProvider_FileProgressEvent(object sender, FileProgress e)
         {
@@ -101,14 +97,14 @@ namespace ClassLibrary1
 
         private async void Button1_Click(object sender, EventArgs e)
         {
-            this.button1.Enabled = false;
+            button1.Enabled = false;
 
             InitProvider();
             await SyncProvider.Start();
         }
         private async void Button5_Click(object sender, EventArgs e)
         {
-            this.button5.Enabled = false;
+            button5.Enabled = false;
 
             InitProvider();
             await SyncProvider.Stop();
@@ -119,7 +115,7 @@ namespace ClassLibrary1
 
         private async void Button3_Click(object sender, EventArgs e)
         {
-            this.button3.Enabled = false;
+            button3.Enabled = false;
 
             InitProvider();
             await SyncProvider.Unregister();
@@ -139,13 +135,10 @@ namespace ClassLibrary1
 
         private void Form1_FormClosing(object sender, FormClosingEventArgs e)
         {
+
             refreshUITimer?.Change(System.Threading.Timeout.Infinite, System.Threading.Timeout.Infinite);
             refreshUITimer?.Dispose();
         }
 
-        private void label3_Click(object sender, EventArgs e)
-        {
-
-        }
     }
 }

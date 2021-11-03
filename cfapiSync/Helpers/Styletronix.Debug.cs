@@ -10,7 +10,9 @@ namespace Styletronix
         public static void LogResponse(HRESULT hResult)
         {
             if (hResult != HRESULT.S_OK)
+            {
                 Debug.WriteLine(hResult.GetException().Message, System.Diagnostics.TraceLevel.Error);
+            }
         }
         public static void LogException(Exception ex)
         {

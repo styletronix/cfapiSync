@@ -232,7 +232,6 @@
             this.label3.Size = new System.Drawing.Size(85, 13);
             this.label3.TabIndex = 21;
             this.label3.Text = "Provider Caption";
-            this.label3.Click += new System.EventHandler(this.label3_Click);
             // 
             // Form1
             // 

@@ -1,18 +1,8 @@
 ﻿using Styletronix.CloudSyncProvider;
 using System;
-using System.Collections.Generic;
 using System.IO;
-using System.Linq;
-using System.Runtime.InteropServices;
-using System.Threading;
 using System.Threading.Tasks;
 using System.Threading.Tasks.Dataflow;
-using Vanara.Extensions;
-using Vanara.PInvoke;
-using Windows.Storage.Provider;
-using static Styletronix.CloudFilterApi;
-using static Styletronix.CloudFilterApi.SafeHandlers;
-using static Vanara.PInvoke.CldApi;
 
 public partial class SyncProvider : IDisposable
 {
@@ -39,7 +29,7 @@ public partial class SyncProvider : IDisposable
             }
             else
             {
-                var localFullPath = GetLocalFullPath(e.Placeholder.RelativeFileName);
+                string localFullPath = GetLocalFullPath(e.Placeholder.RelativeFileName);
 
                 switch (e.ChangeType)
                 {
@@ -50,12 +40,12 @@ public partial class SyncProvider : IDisposable
                         }
                         else
                         {
-                            AddFileToChangeQueue(localFullPath,false);
+                            AddFileToChangeQueue(localFullPath, false);
                         }
                         break;
 
                     case WatcherChangeTypes.Renamed:
-                        var localOldFullPath = GetLocalFullPath(e.OldRelativePath);
+                        string localOldFullPath = GetLocalFullPath(e.OldRelativePath);
 
                         if (Directory.Exists(localOldFullPath))
                         {

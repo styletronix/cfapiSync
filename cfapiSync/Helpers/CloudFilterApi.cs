@@ -3,7 +3,6 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
-using System.Threading.Tasks;
 using Vanara.Extensions;
 using Vanara.PInvoke;
 using Windows.Win32.Storage.FileSystem;
@@ -68,7 +67,9 @@ namespace Styletronix
             HRESULT ret = CfGetPlaceholderInfo(FileHandle, CF_PLACEHOLDER_INFO_CLASS.CF_PLACEHOLDER_INFO_STANDARD, bufferPointerHandler, (uint)InfoBufferLength, out uint returnedLength);
 
             if (returnedLength > 0)
+            {
                 ResultInfo = Marshal.PtrToStructure<CF_PLACEHOLDER_STANDARD_INFO>(bufferPointerHandler);
+            }
 
             return ResultInfo;
         }
@@ -396,7 +397,7 @@ namespace Styletronix
         {
             public void Dispose()
             {
-                foreach (var obj in this)
+                foreach (T obj in this)
                 {
                     obj.Dispose();
                 }
@@ -426,7 +427,7 @@ namespace Styletronix
                     {
                         if (disposing)
                         {
-                            var ret = this.suspendFileCallbackList?.AddOrUpdate(value, 1, (k, v) => v--);
+                            int? ret = suspendFileCallbackList?.AddOrUpdate(value, 1, (k, v) => v--);
 
                             // TODO: Remove item from dictionary if <= 0
                             // Currently unknown how to do it thread safe
@@ -456,12 +457,16 @@ namespace Styletronix
 
             public bool IsSuspended(string value)
             {
-                if (!suspendFileCallbackList.TryGetValue(value, out var result)) return false;
+                if (!suspendFileCallbackList.TryGetValue(value, out int result))
+                {
+                    return false;
+                }
+
                 return result > 0;
             }
             public SuspendedValue SetSuspension(string value)
             {
-                return new SuspendedValue(value, this.suspendFileCallbackList);
+                return new SuspendedValue(value, suspendFileCallbackList);
             }
 
             protected virtual void Dispose(bool disposing)
@@ -470,8 +475,8 @@ namespace Styletronix
                 {
                     if (disposing)
                     {
-                        this.suspendFileCallbackList?.Clear();
-                        this.suspendFileCallbackList = null;
+                        suspendFileCallbackList?.Clear();
+                        suspendFileCallbackList = null;
                     }
 
                     disposedValue = true;

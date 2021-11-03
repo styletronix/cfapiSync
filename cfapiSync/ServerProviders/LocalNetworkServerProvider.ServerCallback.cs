@@ -1,22 +1,21 @@
 ﻿using Styletronix.CloudSyncProvider;
 using System;
-using System.Collections.Concurrent;
 using System.IO;
 
-public partial class ServerProvider
+public partial class LocalNetworkServerProvider
 {
     internal class ServerCallback : IDisposable
     {
         internal readonly FileSystemWatcher fileSystemWatcher;
-        private readonly ServerProvider serverProvider;
+        private readonly LocalNetworkServerProvider serverProvider;
         private bool disposedValue;
         private readonly System.Threading.Tasks.Dataflow.ActionBlock<FileChangedEventArgs> fileChangedActionBlock;
 
-        public ServerCallback(ServerProvider serverProvider)
+        public ServerCallback(LocalNetworkServerProvider serverProvider)
         {
             this.serverProvider = serverProvider;
 
-            this.fileChangedActionBlock = new(data => serverProvider.RaiseFileChanged(data));
+            fileChangedActionBlock = new(data => serverProvider.RaiseFileChanged(data));
 
             fileSystemWatcher = new FileSystemWatcher
             {
@@ -41,7 +40,7 @@ public partial class ServerProvider
 
         private void FileSystemWatcher_Error(object sender, ErrorEventArgs e)
         {
-            var x = e.GetException();
+            Exception x = e.GetException();
             if (x.HResult == -2147467259)
             {
                 System.Threading.Tasks.Task.Delay(5000).ContinueWith((t) =>
@@ -82,8 +81,15 @@ public partial class ServerProvider
 
         private void FileSystemWatcher_Changed(object sender, FileSystemEventArgs e)
         {
-            if (e.FullPath.Contains(@"$Recycle.bin")) return;
-            if (Path.GetFileName(e.FullPath).StartsWith("$_")) return;
+            if (e.FullPath.Contains(@"$Recycle.bin"))
+            {
+                return;
+            }
+
+            if (Path.GetFileName(e.FullPath).StartsWith("$_"))
+            {
+                return;
+            }
 
             try
             {
@@ -102,8 +108,15 @@ public partial class ServerProvider
 
         private void FileSystemWatcher_Renamed(object sender, RenamedEventArgs e)
         {
-            if (e.FullPath.Contains(@"$Recycle.bin") && e.OldFullPath.Contains(@"$Recycle.bin")) return;
-            if (e.Name.StartsWith("$_")) return;
+            if (e.FullPath.Contains(@"$Recycle.bin") && e.OldFullPath.Contains(@"$Recycle.bin"))
+            {
+                return;
+            }
+
+            if (e.Name.StartsWith("$_"))
+            {
+                return;
+            }
 
             if (e.OldName.StartsWith("$_"))
             {
@@ -147,8 +160,15 @@ public partial class ServerProvider
 
         private void FileSystemWatcher_Deleted(object sender, FileSystemEventArgs e)
         {
-            if (e.FullPath.Contains(@"$Recycle.bin")) return;
-            if (Path.GetFileName(e.FullPath).StartsWith("$_")) return;
+            if (e.FullPath.Contains(@"$Recycle.bin"))
+            {
+                return;
+            }
+
+            if (Path.GetFileName(e.FullPath).StartsWith("$_"))
+            {
+                return;
+            }
 
             try
             {
@@ -167,8 +187,15 @@ public partial class ServerProvider
 
         private void FileSystemWatcher_Created(object sender, FileSystemEventArgs e)
         {
-            if (e.FullPath.Contains(@"$Recycle.bin")) return;
-            if (Path.GetFileName(e.FullPath).StartsWith("$_")) return;
+            if (e.FullPath.Contains(@"$Recycle.bin"))
+            {
+                return;
+            }
+
+            if (Path.GetFileName(e.FullPath).StartsWith("$_"))
+            {
+                return;
+            }
 
             try
             {
@@ -184,19 +211,19 @@ public partial class ServerProvider
                 Styletronix.Debug.WriteLine(ex.Message, System.Diagnostics.TraceLevel.Error);
             }
         }
-       
+
         protected virtual void Dispose(bool disposing)
         {
             if (!disposedValue)
             {
                 if (disposing)
                 {
-                    if (this.fileSystemWatcher != null)
+                    if (fileSystemWatcher != null)
                     {
-                        this.fileSystemWatcher.EnableRaisingEvents = false;
-                        this.fileSystemWatcher.Dispose();
+                        fileSystemWatcher.EnableRaisingEvents = false;
+                        fileSystemWatcher.Dispose();
                     }
-                    this.fileChangedActionBlock?.Complete();
+                    fileChangedActionBlock?.Complete();
                 }
 
                 disposedValue = true;
