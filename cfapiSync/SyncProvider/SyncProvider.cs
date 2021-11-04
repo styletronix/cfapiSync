@@ -17,7 +17,7 @@ using static Vanara.PInvoke.CldApi;
 public partial class SyncProvider : IDisposable
 {
     private bool _isConnected;
-
+    
     private CancellationTokenSource ChangedDataCancellationTokenSource;
     private readonly CancellationTokenSource GlobalShutDownTokenSource = new();
     private readonly SyncContext SyncContext;

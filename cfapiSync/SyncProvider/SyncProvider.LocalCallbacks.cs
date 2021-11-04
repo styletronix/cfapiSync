@@ -24,64 +24,51 @@ public partial class SyncProvider
     public event EventHandler<FileProgress> FileProgressEvent;
 
     private readonly string[] ExcludedProcessesForFetchPlaceholders = new string[] {
-        // @"\SearchProtocolHost.exe" // This process tries to index folders which are just a few seconds before marked as "ENABLE_ON_DEMAND_POPULATION" which results in unwanted repopulation.
+        @".*\\SearchProtocolHost\.exe.*", // This process tries to index folders which are just a few seconds before marked as "ENABLE_ON_DEMAND_POPULATION" which results in unwanted repopulation.
+        @".*\\svchost\.exe.*StorSvc" // This process cleans old data. Fetching of placeholders is not required for this process
     };
 
     public void FETCH_PLACEHOLDERS(in CF_CALLBACK_INFO CallbackInfo, in CF_CALLBACK_PARAMETERS CallbackParameters)
     {
-        CF_PROCESS_INFO processInfo = Marshal.PtrToStructure<CF_PROCESS_INFO>(CallbackInfo.ProcessInfo);
-        bool cancelFetch = false;
-        string relativePath = GetRelativePath(CallbackInfo);
-        string fullPath = GetLocalFullPath(CallbackInfo);
+        var opInfo = CreateOPERATION_INFO(CallbackInfo, CF_OPERATION_TYPE.CF_OPERATION_TYPE_TRANSFER_PLACEHOLDERS);
 
-        CF_OPERATION_INFO opInfo = CreateOPERATION_INFO(CallbackInfo, CF_OPERATION_TYPE.CF_OPERATION_TYPE_TRANSFER_PLACEHOLDERS);
+        bool cancelFetch = SyncContext.ServerProvider.Status != ServerProviderStatus.Connected;
 
-        //if (processInfo.ProcessId == System.Diagnostics.Process.GetCurrentProcess().Id)
-        //{
-        //    // Own process should not trigger FETCH_PLACEHOLDERS. 
-        //    Styletronix.Debug.WriteLine("FETCH_PLACEHOLDERS Triggered by own Process!", System.Diagnostics.TraceLevel.Verbose);
-        //    cancelFetch = true;
-        //}
-
-        foreach (string process in ExcludedProcessesForFetchPlaceholders)
+        if (!cancelFetch)
         {
-            if (processInfo.ImagePath.EndsWith(process, StringComparison.CurrentCultureIgnoreCase))
+            CF_PROCESS_INFO processInfo = Marshal.PtrToStructure<CF_PROCESS_INFO>(CallbackInfo.ProcessInfo);
+            foreach (string process in ExcludedProcessesForFetchPlaceholders)
             {
-                Styletronix.Debug.WriteLine("FETCH_PLACEHOLDERS Triggered by excluded App: " + processInfo.ImagePath, System.Diagnostics.TraceLevel.Info);
-                cancelFetch = true;
-                break;
+                if (System.Text.RegularExpressions.Regex.IsMatch(processInfo.CommandLine, process))
+                {
+                    //Styletronix.Debug.WriteLine("FETCH_PLACEHOLDERS Triggered by excluded App: " + processInfo.ImagePath, System.Diagnostics.TraceLevel.Info);
+                    cancelFetch = true;
+                    break;
+                }
             }
         }
 
-
-        // TODO: CancelFetch with DISABLE_ON_DEMAND_POPULATION results in synchronisation errors.
-        //CancelFetch with ENABLE on demand population results in endless repeat by SearchProtocolHost.exe
-        // Or is it just called many times by SearchProtocolHost ??
-
         if (cancelFetch)
         {
-            ExtendedPlaceholderState localPlaceholder = new(fullPath);
-            localPlaceholder.ConvertToPlaceholder();
-            if (localPlaceholder.PlaceholderInfoStandard.PinState == CF_PIN_STATE.CF_PIN_STATE_PINNED)
-            {
-                goto SkipCancel;
-            }
-
             CF_OPERATION_PARAMETERS.TRANSFERPLACEHOLDERS TpParam = new()
             {
                 PlaceholderArray = IntPtr.Zero,
                 Flags = CF_OPERATION_TRANSFER_PLACEHOLDERS_FLAGS.CF_OPERATION_TRANSFER_PLACEHOLDERS_FLAG_NONE,
                 PlaceholderCount = 0,
                 PlaceholderTotalCount = 0,
-                CompletionStatus = new NTStatus((uint)NtStatus.STATUS_SUCCESS)
+                CompletionStatus = new NTStatus((uint)NtStatus.STATUS_CLOUD_FILE_NETWORK_UNAVAILABLE)
             };
             CF_OPERATION_PARAMETERS opParams = CF_OPERATION_PARAMETERS.Create(TpParam);
             HRESULT executeResult = CfExecute(opInfo, ref opParams);
+
+
             Styletronix.Debug.LogResponse(executeResult);
             return;
         }
 
-    SkipCancel:
+
+        string relativePath = GetRelativePath(CallbackInfo);
+        string fullPath = GetLocalFullPath(CallbackInfo);
 
         CancellationTokenSource ctx = new();
 
@@ -214,6 +201,18 @@ public partial class SyncProvider
     {
         Styletronix.Debug.WriteLine("Fetch Placeholder: " + relativePath, System.Diagnostics.TraceLevel.Info);
 
+        string fullPath = GetLocalFullPath(relativePath);
+
+        //TODO: Transfer Placeholders in Chunks for large directories.
+        //Question: What is considere a large directory? > 1000 entries? Let ServerProvider decide
+        // - Get partial file list of large Directory.
+        // - Add to partial and full list.
+        // - Send partial list to  CfExecute.
+        // - Clear partial list.
+        // - Get next partial file list
+        // - Repeat until completed.
+        // - Compare full list after last CFExecute.
+
         try
         {
             using SafePlaceHolderList infos = new();
@@ -224,30 +223,34 @@ public partial class SyncProvider
             if (!getServerFileListResult.Succeeded)
             {
                 completionStatus = getServerFileListResult.Status;
-                goto skip;
+            }
+            else
+            {
+                // Create CreatePlaceholderInfo for each Cloud File
+                foreach (Placeholder placeholder in getServerFileListResult.Data)
+                {
+                    infos.Add(Styletronix.CloudFilterApi.CreatePlaceholderInfo(placeholder, Guid.NewGuid().ToString()));
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        return;
+                    }
+                };
             }
 
-            foreach (Placeholder placeholder in getServerFileListResult.Data)
-            {
-                infos.Add(Styletronix.CloudFilterApi.CreatePlaceholderInfo(placeholder, Guid.NewGuid().ToString()));
-                if (cancellationToken.IsCancellationRequested)
-                {
-                    return;
-                }
-            };
 
-
-        skip:
+            // Directorys which do not exist on Server should not throw any exception.
             if (completionStatus == NtStatus.STATUS_NOT_A_CLOUD_FILE)
             {
+
                 completionStatus = NtStatus.STATUS_SUCCESS;
             }
 
-            string fullPath = GetLocalFullPath(relativePath);
+
             using DisposableObject<string> lockItem = ChangedDataQueue.LockItem(fullPath);
 
-            uint total = (uint)infos.Count;
 
+
+            uint total = (uint)infos.Count;
             CF_OPERATION_PARAMETERS.TRANSFERPLACEHOLDERS TpParam = new()
             {
                 PlaceholderArray = infos,
@@ -307,42 +310,36 @@ public partial class SyncProvider
             return;
         }
 
-        //suspendLocalFileChangeHandling.BeginSuspension();
-        try
-        {
-            NTStatus status;
+        using var lockItem = this.ChangedDataQueue.LockItem(GetLocalFullPath(RelativeFileName));
 
-            if (!RelativeFileNameDestination.StartsWith(@"\$Recycle.Bin\", StringComparison.CurrentCultureIgnoreCase))
-            {
-                MoveFileResult result = await SyncContext.ServerProvider.MoveFileAsync(RelativeFileName, RelativeFileNameDestination, isDirectory);
-                if (result.Succeeded)
-                {
-                    status = NTStatus.STATUS_SUCCESS;
-                }
-                else
-                {
-                    status = NTStatus.STATUS_ACCESS_DENIED;
-                }
-            }
-            else
+
+        NTStatus status;
+
+        if (!RelativeFileNameDestination.StartsWith(@"\$Recycle.Bin\", StringComparison.CurrentCultureIgnoreCase))
+        {
+            MoveFileResult result = await SyncContext.ServerProvider.MoveFileAsync(RelativeFileName, RelativeFileNameDestination, isDirectory);
+            if (result.Succeeded)
             {
                 status = NTStatus.STATUS_SUCCESS;
             }
-
-
-            CF_OPERATION_PARAMETERS opParams = CF_OPERATION_PARAMETERS.Create(new CF_OPERATION_PARAMETERS.ACKRENAME
+            else
             {
-                Flags = CF_OPERATION_ACK_RENAME_FLAGS.CF_OPERATION_ACK_RENAME_FLAG_NONE,
-                CompletionStatus = status
-            });
-
-            Styletronix.Debug.LogResponse(CfExecute(opInfo, ref opParams));
+                status = NTStatus.STATUS_ACCESS_DENIED;
+            }
         }
-        finally
+        else
         {
-            //suspendLocalFileChangeHandling.EndSuspension();
+            status = NTStatus.STATUS_SUCCESS;
         }
 
+
+        CF_OPERATION_PARAMETERS opParams = CF_OPERATION_PARAMETERS.Create(new CF_OPERATION_PARAMETERS.ACKRENAME
+        {
+            Flags = CF_OPERATION_ACK_RENAME_FLAGS.CF_OPERATION_ACK_RENAME_FLAG_NONE,
+            CompletionStatus = status
+        });
+
+        Styletronix.Debug.LogResponse(CfExecute(opInfo, ref opParams));
     }
     private async Task NOTIFY_DELETE_Action(DeleteAction dat)
     {
@@ -885,7 +882,11 @@ public partial class SyncProvider
                 return false;
             }
         }
-
+        /// <summary>
+        /// Locks item for subsequent adds... While the LockItem is not Disposed, the list does not add the item to list if it is requested by Add or TryAdd
+        /// </summary>
+        /// <param name="item"></param>
+        /// <returns>IDisposable Item which holds the Lock for the item and releases the lock after disposable</returns>
         public DisposableObject<t> LockItem(t item)
         {
             LockTable.AddOrUpdate(item, 1, (k, v) => v + 1);

@@ -16,6 +16,13 @@ public partial class LocalNetworkServerProvider : IServerFileProvider
             UseRecycleBinForChangedFiles = true,
             UseTempFilesForUpload = true
         };
+
+        preferredServerProviderSettings = new()
+        {
+            AllowPartialUpdate = true,
+            MaxChunkSize = int.MaxValue,
+            MinChunkSize = 4096
+        };
     }
 
     public event EventHandler<ServerProviderStateChangedEventArgs> ServerProviderStateChanged;
@@ -23,16 +30,14 @@ public partial class LocalNetworkServerProvider : IServerFileProvider
 
     public SyncContext SyncContext { get; set; }
     public PreferredSettings PreferredServerProviderSettings => preferredServerProviderSettings;
+    public ServerProviderStatus Status { get => _Status; }
+
 
     private readonly ServerProviderParams Parameter;
-    private ServerProviderStatus lastStatus = ServerProviderStatus.Disconnected;
+    private ServerProviderStatus _Status = ServerProviderStatus.Disconnected;
     private ServerCallback serverCallback;
-    private readonly PreferredSettings preferredServerProviderSettings = new()
-    {
-        AllowPartialUpdate = true,
-        MaxChunkSize = int.MaxValue,
-        MinChunkSize = 4096
-    };
+    private readonly PreferredSettings preferredServerProviderSettings;
+
 
     public class ServerProviderParams
     {
@@ -260,10 +265,10 @@ public partial class LocalNetworkServerProvider : IServerFileProvider
     }
     internal void SetProviderStatus(ServerProviderStatus status)
     {
-        if (lastStatus != status)
+        if (_Status != status)
         {
             RaiseServerProviderStateChanged(new ServerProviderStateChangedEventArgs(status));
-            lastStatus = status;
+            _Status = status;
         }
     }
     internal string GetRelativePath(string fullPath)

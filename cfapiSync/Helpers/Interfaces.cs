@@ -103,6 +103,7 @@ namespace Styletronix.CloudSyncProvider
 
         public SyncContext SyncContext { get; set; }
         public PreferredSettings PreferredServerProviderSettings { get; }
+        public ServerProviderStatus Status { get; }
 
         /// <summary>
         /// Establish a connection to the Server to check Authentication and for receiving realtime Updates.

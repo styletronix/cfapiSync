@@ -8,9 +8,9 @@ using System.Runtime.InteropServices;
 [assembly: AssemblyTitle("CfapiSync GUI")]
 [assembly: AssemblyDescription("")]
 [assembly: AssemblyConfiguration("")]
-[assembly: AssemblyCompany("Razer")]
+[assembly: AssemblyCompany("Styletronix.net")]
 [assembly: AssemblyProduct("CfapiSync GUI")]
-[assembly: AssemblyCopyright("Copyright © Razer 2021")]
+[assembly: AssemblyCopyright("Copyright © Styletronix.net 2021")]
 [assembly: AssemblyTrademark("")]
 [assembly: AssemblyCulture("")]
 
