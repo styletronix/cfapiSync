@@ -33,11 +33,15 @@ The ServerProvider uses the IServerProvider Interface to communicate with the Sy
 - WebDav
 - Amazon S3
 
+### Current issues:
+Word and Excel drives me crazy. The way files are handled by office apps are absolutely not easy to handle in sync scenarios in realtime. The chance is high, that local changes to a word file triggers a local delete request while word trnsfers the temp file to the actual existing word document. While the delete request is processed on the server, the server may retrigger the delete to all clients which will result in deletion of the word document on all clients.
+
+Maybe i should in general not handle any delete request in realtime. It may be much saver to add all delete rquests to a queue wich is then checked few minutes later by the full sync algorithm for the given directory. Also it does not seem to be relieble to handle each file request in cloud scenario as a single task... In some situations it seems to be more relieable to revalidate the entire directory where changes occured....  Changes to an entire directory triggers one request to the server with response of the folder content while several files are producing multiple request to the server vor a single directory. So whats better? Muliple smal requests or one request with larger amount of data?
+
+
 ### TODO:
-- Validate Hydration of new files inside pinned folder.
 - Ignore changes to files on Server if local file is contained in a not populated folder which is not pinned too.
-- Failure Handling / Retry.
-- Reconnect after Server disconnect.
+
 - Prevent endless Update if ETag is not reliable.
 - Save local / remote Folder
 - Add WebDav support
@@ -49,6 +53,11 @@ The ServerProvider uses the IServerProvider Interface to communicate with the Sy
 - .....
 
 ### Changes:
+#### 11-07.2021
+- Failure Handling / Retry.
+- Validate Hydration of new files inside pinned folder.
+- Reconnect after Server disconnect.
+
 #### 11-03-2021
 - Delay after online file changed.
 - Revalidate "excluded" status after file move.
