@@ -17,21 +17,26 @@ using static Vanara.PInvoke.CldApi;
 public partial class SyncProvider : IDisposable
 {
     private bool _isConnected;
-    
+
     private CancellationTokenSource ChangedDataCancellationTokenSource;
     private readonly CancellationTokenSource GlobalShutDownTokenSource = new();
     private readonly SyncContext SyncContext;
 
     private readonly int chunkSize = 1024 * 1024 * 2; // 2MB chunkSize for File Download / Upload
     private readonly int optionalChunkSizeFaktor = 2; // If optional Offset is supplied, Prefetch x times of chunkSize
-    private readonly int optionalChunkSize;
+    private readonly int optionalChunkSize; // optionalChunkSize = chunkSize * optionalChunkSizeFaktor
     private readonly int stackSize = 1024 * 512; // Buffer size for P/Invoke Call to CFExecute max 1 MB
+    private readonly TimeSpan FailedQueueTimerInterval = TimeSpan.FromSeconds(10); // Retry interval for failed files.
+    private readonly TimeSpan LocalSyncTimerInterval = TimeSpan.FromMinutes(5); // Interval for local file change checks if FileWatcher missed changes.
+    private readonly string[] fileExclusions = new string[] { @".*\\Thumbs\.db", @".*\\Desktop\.ini", @".*\.tmp", @".*Recycle\.Bin.*", @".*\~.*" }; // Files which are not synced. (RegEx)
 
     private bool disposedValue;
-    private readonly string[] fileExclusions = new string[] { @"Thumbs.db", @"Desktop.ini" };
     private CancellationToken GlobalShutDownToken => GlobalShutDownTokenSource.Token;
+    private readonly Timer FailedQueueTimer;
+    private Timer LocalSyncTimer;
 
     public event EventHandler<int> QueuedItemsCountChanged;
+    public event EventHandler<int> FailedDataQueueChanged;
 
     public SyncProvider(SyncProviderParameters parameter)
     {
@@ -40,7 +45,8 @@ public partial class SyncProvider : IDisposable
             LocalRootFolder = parameter.LocalDataPath,
             LocalRootFolderNormalized = parameter.LocalDataPath.Remove(0, 2),
             ServerProvider = parameter.ServerProvider,
-            SyncProviderParameter = parameter
+            SyncProviderParameter = parameter,
+            SyncProvider = this
         };
         SyncContext.ServerProvider.SyncContext = SyncContext;
 
@@ -54,6 +60,53 @@ public partial class SyncProvider : IDisposable
 
         SyncContext.ServerProvider.ServerProviderStateChanged += ServerProvider_ServerProviderStateChanged;
         SyncContext.ServerProvider.FileChanged += ServerProvider_FileChanged;
+
+        FailedQueueTimer = new(FailedQueueTimerCallback, null, Timeout.Infinite, Timeout.Infinite);
+        LocalSyncTimer = new(LocalSyncTimerCallback, null, Timeout.Infinite, Timeout.Infinite);
+    }
+
+    private async void FailedQueueTimerCallback(object state)
+    {
+        if (SyncContext.ServerProvider.Status != ServerProviderStatus.Connected)
+            return;
+
+        FailedQueueTimer.Change(Timeout.Infinite, Timeout.Infinite);
+        try
+        {
+            var items = FailedDataQueue.AsQueryable();
+
+            foreach (var item in (from a in items where a.Value.NextTry <= DateTime.Now select a))
+            {
+                if (await ProcessFileChanged(item.Key, SyncMode.Full))
+                {
+                    FailedDataQueue.TryRemove(item.Key, out _);
+                    FailedDataQueueChanged?.Invoke(this, FailedDataQueue.Count());
+                }
+            }
+        }
+        finally
+        {
+            FailedQueueTimer.Change(FailedQueueTimerInterval, FailedQueueTimerInterval);
+        }
+    }
+    private async void LocalSyncTimerCallback(object state)
+    {
+        if (SyncContext.ServerProvider.Status != ServerProviderStatus.Connected)
+            return;
+
+        LocalSyncTimer.Change(Timeout.Infinite, Timeout.Infinite);
+        try
+        {
+            await SyncDataAsync(SyncMode.Local, GlobalShutDownToken);
+        }
+        catch (Exception ex)
+        {
+            Styletronix.Debug.LogException(ex);
+        }
+        finally
+        {
+            LocalSyncTimer.Change(LocalSyncTimerInterval, LocalSyncTimerInterval);
+        }
     }
 
     public string GetSyncRootID()
@@ -225,7 +278,6 @@ public partial class SyncProvider : IDisposable
         //{
         //    Styletronix.Debug.WriteLine(ex.Message);
         //}
-
     }
 
 
@@ -347,8 +399,8 @@ public partial class SyncProvider : IDisposable
     }
     internal List<Placeholder> GetLocalFileList(string absolutePath, CancellationToken cancellationToken)
     {
-        List<Placeholder> localPlaceholders = new List<Placeholder>();
-        DirectoryInfo directory = new DirectoryInfo(absolutePath);
+        List<Placeholder> localPlaceholders = new();
+        DirectoryInfo directory = new(absolutePath);
 
         foreach (FileSystemInfo fileSystemInfo in directory.EnumerateFileSystemInfos())
         {
@@ -366,8 +418,8 @@ public partial class SyncProvider : IDisposable
         bool anyFileHydrated = false;
         List<Placeholder> remotePlaceholderes;
 
-        using ExtendedPlaceholderState pl = new(folder);
-        bool isExcludedFile = IsExcludedFile(folder, pl.Attributes);
+        using ExtendedPlaceholderState localFolderPlaceholder = new(folder);
+        bool isExcludedFile = IsExcludedFile(folder, localFolderPlaceholder.Attributes);
 
         // Get Filelist from Server on FullSync
         if (syncMode == SyncMode.Full && !isExcludedFile)
@@ -387,14 +439,14 @@ public partial class SyncProvider : IDisposable
 
         if (isExcludedFile)
         {
-            pl.ConvertToPlaceholder();
-            pl.SetPinState(CF_PIN_STATE.CF_PIN_STATE_EXCLUDED);
-            pl.SetInSyncState(CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_IN_SYNC);
+            localFolderPlaceholder.ConvertToPlaceholder(true);
+            localFolderPlaceholder.SetPinState(CF_PIN_STATE.CF_PIN_STATE_EXCLUDED);
+            localFolderPlaceholder.SetInSyncState(CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_IN_SYNC);
         }
 
         using Kernel32.SafeSearchHandle findHandle = Kernel32.FindFirstFile(@"\\?\" + folder + @"\*", out WIN32_FIND_DATA findData);
         bool fileFound = (findHandle.IsInvalid == false);
-        using AutoDisposeList<ExtendedPlaceholderState> localPlaceholders = new AutoDisposeList<ExtendedPlaceholderState>();
+        using AutoDisposeList<ExtendedPlaceholderState> localPlaceholders = new();
 
 
         // Check existing local placeholders
@@ -403,7 +455,7 @@ public partial class SyncProvider : IDisposable
             if (findData.cFileName != "." && findData.cFileName != "..")
             {
                 string fullFilePath = folder + "\\" + findData.cFileName;
-                using ExtendedPlaceholderState localPlaceholder = new(findData, folder);
+                ExtendedPlaceholderState localPlaceholder = new(findData, folder);
                 localPlaceholders.Add(localPlaceholder);
 
                 Placeholder remotePlaceholder = (from a in remotePlaceholderes where string.Equals(a.RelativeFileName, findData.cFileName, StringComparison.CurrentCultureIgnoreCase) select a).FirstOrDefault();
@@ -434,15 +486,12 @@ public partial class SyncProvider : IDisposable
                         {
                             if (syncMode == SyncMode.Full)
                             {
-                                await ProcessChangedDataAsync(fullFilePath, localPlaceholder, remotePlaceholder, ctx);
-                                if (!localPlaceholder.PlaceholderState.HasFlag(CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_IN_SYNC) || localPlaceholder.PlaceholderInfoStandard.OnDiskDataSize > 0)
-                                {
-                                    anyFileHydrated = true;
-                                }
+                                await ProcessChangedDataAsync(fullFilePath, localPlaceholder, (DynamicServerPlaceholder)remotePlaceholder, syncMode, ctx);
                             }
                             else
                             {
-                                AddFileToChangeQueue(fullFilePath, true);
+                                await ProcessChangedDataAsync(fullFilePath, localPlaceholder, new DynamicServerPlaceholder(GetRelativePath(fullFilePath), localPlaceholder.IsDirectory, this.SyncContext), syncMode, ctx);
+                                //AddFileToChangeQueue(fullFilePath, true);
                             }
                         }
                         catch (Exception)
@@ -451,51 +500,62 @@ public partial class SyncProvider : IDisposable
                         }
 
                         if (await SyncDataAsyncRecursive(fullFilePath, ctx, syncMode))
-                        {
                             anyFileHydrated = true;
-                        }
                     }
                 }
                 else
                 {
-                    if (isExcludedFile)
+                    if (syncMode == SyncMode.Full)
                     {
-                        localPlaceholder.ConvertToPlaceholder();
-                        localPlaceholder.SetPinState(CF_PIN_STATE.CF_PIN_STATE_EXCLUDED);
-                        localPlaceholder.SetInSyncState(CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_IN_SYNC);
-
-                        if (localPlaceholder.PlaceholderState.HasFlag(CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_PARTIAL))
-                        {
-                            Styletronix.Debug.WriteLine("Deleting partial excluded File: " + localPlaceholder.FullPath, System.Diagnostics.TraceLevel.Warning);
-                            File.Delete(localPlaceholder.FullPath);
-                        }
-
+                        await ProcessChangedDataAsync(fullFilePath, localPlaceholder, (DynamicServerPlaceholder)remotePlaceholder, syncMode, ctx);
                     }
-                    else if (syncMode == SyncMode.Full || !localPlaceholder.PlaceholderState.HasFlag(CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_IN_SYNC))
+                    else
                     {
-                        try
-                        {
-                            if (syncMode == SyncMode.Full)
-                            {
-                                await ProcessChangedDataAsync(fullFilePath, localPlaceholder, remotePlaceholder, ctx);
-                                if (!localPlaceholder.PlaceholderState.HasFlag(CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_IN_SYNC) || localPlaceholder.PlaceholderInfoStandard.OnDiskDataSize > 0)
-                                {
-                                    anyFileHydrated = true;
-                                }
-                            }
-                            else
-                            {
-                                AddFileToChangeQueue(fullFilePath, true);
-                            }
-
-                        }
-                        catch (Exception)
-                        {
-                            AddFileToChangeQueue(fullFilePath, true);
-                        }
-
+                        await ProcessChangedDataAsync(fullFilePath, localPlaceholder, new DynamicServerPlaceholder(GetRelativePath(fullFilePath), localPlaceholder.IsDirectory, this.SyncContext), syncMode, ctx);
                     }
+
+                    //if (isExcludedFile)
+                    //{
+                    //    localPlaceholder.ConvertToPlaceholder(true);
+                    //    localPlaceholder.SetPinState(CF_PIN_STATE.CF_PIN_STATE_EXCLUDED);
+                    //    localPlaceholder.SetInSyncState(CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_IN_SYNC);
+
+                    //    if (localPlaceholder.PlaceholderState.HasFlag(CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_PARTIAL))
+                    //    {
+                    //        Styletronix.Debug.WriteLine("Deleting partial excluded File: " + localPlaceholder.FullPath, System.Diagnostics.TraceLevel.Warning);
+                    //        File.Delete(localPlaceholder.FullPath);
+                    //    }
+
+                    //}
+                    //else if (syncMode == SyncMode.Full || !localPlaceholder.PlaceholderState.HasFlag(CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_IN_SYNC))
+                    //{
+                    //    try
+                    //    {
+                    //        if (syncMode == SyncMode.Full)
+                    //        {
+                    //            await ProcessChangedDataAsync(fullFilePath, localPlaceholder, remotePlaceholder, ctx);
+                    //            if (!localPlaceholder.PlaceholderState.HasFlag(CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_IN_SYNC) || localPlaceholder.PlaceholderInfoStandard.OnDiskDataSize > 0)
+                    //            {
+                    //                anyFileHydrated = true;
+                    //            }
+                    //        }
+                    //        else
+                    //        {
+                    //            AddFileToChangeQueue(fullFilePath, true);
+                    //        }
+
+                    //    }
+                    //    catch (Exception)
+                    //    {
+                    //        AddFileToChangeQueue(fullFilePath, true);
+                    //    }
+
+                    //}
                 }
+
+                if (!localPlaceholder.PlaceholderState.HasFlag(CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_IN_SYNC) || !localPlaceholder.PlaceholderState.HasFlag(CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_PARTIAL) || localPlaceholder.PlaceholderInfoStandard.OnDiskDataSize > 0 )
+                    anyFileHydrated = true;
+
             }
 
             ctx.ThrowIfCancellationRequested();
@@ -518,14 +578,22 @@ public partial class SyncProvider : IDisposable
 
         if (syncMode == SyncMode.Full)
         {
-            pl.SetInSyncState(CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_IN_SYNC);
-        }
+            localFolderPlaceholder.SetInSyncState(CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_IN_SYNC);
 
-        if (syncMode == SyncMode.Full && !anyFileHydrated && !isExcludedFile && pl.PlaceholderInfoStandard.PinState != CF_PIN_STATE.CF_PIN_STATE_PINNED)
-        {
-            pl.EnableOnDemandPopulation();
+            if (!anyFileHydrated && !isExcludedFile && localFolderPlaceholder.PlaceholderInfoStandard.PinState != CF_PIN_STATE.CF_PIN_STATE_PINNED)
+            {
+                localFolderPlaceholder.EnableOnDemandPopulation();
+            }
+            else
+            {
+                localFolderPlaceholder.DisableOnDemandPopulation();
+            }
         }
-
+        //else
+        //{
+        //    if (!anyFileHydrated && !isExcludedFile && localFolderPlaceholder.PlaceholderInfoStandard.PinState != CF_PIN_STATE.CF_PIN_STATE_PINNED)
+        //        localFolderPlaceholder.EnableOnDemandPopulation();
+        //}
 
         return anyFileHydrated;
     }
@@ -614,9 +682,9 @@ public partial class SyncProvider : IDisposable
         GenericResult connectResult = await SyncContext.ServerProvider.Connect();
         Styletronix.Debug.WriteLine("Connect result: " + connectResult.Status.ToString(), System.Diagnostics.TraceLevel.Verbose);
 
-
-        Styletronix.Debug.WriteLine("Full Sync...", System.Diagnostics.TraceLevel.Info);
-        await SyncDataAsync(SyncMode.Full, GlobalShutDownToken);
+        // FullSync should be initiated by ServerProvider after connection.
+        //Styletronix.Debug.WriteLine("Full Sync...", System.Diagnostics.TraceLevel.Info);
+        //await SyncDataAsync(SyncMode.Full, GlobalShutDownToken);
 
         ret = CfUpdateSyncProviderStatus(SyncContext.ConnectionKey, CF_SYNC_PROVIDER_STATUS.CF_PROVIDER_STATUS_IDLE);
         if (ret.Succeeded == false) { Styletronix.Debug.WriteLine("Fehler bei CfUpdateSyncProviderStatus: " + ret.ToString(), System.Diagnostics.TraceLevel.Warning); }
@@ -708,7 +776,7 @@ public partial class SyncProvider : IDisposable
     //}
 
 
-    private readonly ConcurrentDictionary<string, FailedData> FailedDataQueue = new();
+    public readonly ConcurrentDictionary<string, FailedData> FailedDataQueue = new();
     private readonly MultiQueue<string> ChangedDataQueue = new();
     private Task ChangedDataQueueTask;
 
@@ -751,19 +819,7 @@ public partial class SyncProvider : IDisposable
         }
     }
 
-    private async void FileSystemWatcher_OnError(object sender, ErrorEventArgs e)
-    {
-        Styletronix.Debug.WriteLine("FileSystemWatcher Error: " + e.GetException().Message, System.Diagnostics.TraceLevel.Warning);
 
-        await Task.Delay(2000, GlobalShutDownToken).ConfigureAwait(false);
-        _ = SyncDataAsync(SyncMode.Local, GlobalShutDownToken).ConfigureAwait(false);
-    }
-    private void FileSystemWatcher_OnChanged(object sender, FileSystemEventArgs e)
-    {
-        //await Task.Delay(2000, this.GlobalShutDownToken).ConfigureAwait(false);
-
-        AddFileToChangeQueue(e.FullPath, false);
-    }
 
     private Task CreateChangedDataQueueTask()
     {
@@ -780,7 +836,7 @@ public partial class SyncProvider : IDisposable
                     DisposableObject<string> itemLock = ChangedDataQueue.LockItem(item);
                     try
                     {
-                        await ProcessFileChanged(item);
+                        await ProcessFileChanged(item, SyncMode.Full);
                     }
                     catch (Exception ex)
                     {
@@ -796,14 +852,16 @@ public partial class SyncProvider : IDisposable
         }, ChangedDataQueue.CancellationToken, TaskCreationOptions.LongRunning |
         TaskCreationOptions.RunContinuationsAsynchronously, TaskScheduler.Default).Unwrap();
     }
-    private async Task ProcessFileChanged(string path)
+    private async Task<bool> ProcessFileChanged(string path, SyncMode syncMode)
     {
         try
         {
             QueuedItemsCountChanged?.Invoke(this, ChangedDataQueue.Count());
             Styletronix.Debug.WriteLine("ProcessFileChanged: " + path, System.Diagnostics.TraceLevel.Verbose);
 
-            await ProcessChangedDataAsync(path, ChangedDataCancellationTokenSource.Token).ConfigureAwait(false);
+            await ProcessChangedDataAsync(path,  syncMode, ChangedDataCancellationTokenSource.Token).ConfigureAwait(false);
+
+            return true;
         }
         catch (Exception ex)
         {
@@ -824,12 +882,13 @@ public partial class SyncProvider : IDisposable
                 current.RetryCount += 1;
                 return current;
             });
+            FailedDataQueueChanged?.Invoke(this, FailedDataQueue.Count());
 
-            //TODO: Handle retries
+            return false;
         }
     }
 
-    private async Task ProcessChangedDataAsync(string fullPath, CancellationToken ctx)
+    private async Task ProcessChangedDataAsync(string fullPath, SyncMode syncMode, CancellationToken ctx)
     {
         // Ignore deleted Files
         if (!FileOrDirectoryExists(fullPath))
@@ -838,47 +897,42 @@ public partial class SyncProvider : IDisposable
         }
 
         using ExtendedPlaceholderState localPlaceHolder = new(fullPath);
-        await ProcessChangedDataAsync(fullPath, localPlaceHolder, ctx).ConfigureAwait(false);
+        await ProcessChangedDataAsync(fullPath, localPlaceHolder, syncMode, ctx).ConfigureAwait(false);
     }
-    private async Task ProcessChangedDataAsync(string fullPath, ExtendedPlaceholderState localPlaceHolder, CancellationToken ctx)
+    private async Task ProcessChangedDataAsync(string fullPath, ExtendedPlaceholderState localPlaceHolder, SyncMode syncMode, CancellationToken ctx)
     {
-        // Get ServerInfo
-        Placeholder remotePlaceholder = null;
+        //// Get ServerInfo
+        //Placeholder remotePlaceholder = null;
 
-        if (!IsExcludedFile(fullPath))
-        {
-            Styletronix.Debug.WriteLine("ServerProvider.GetFileInfo: " + fullPath);
-            GetFileInfoResult getFileResult = await SyncContext.ServerProvider.GetFileInfo(GetRelativePath(fullPath), localPlaceHolder.IsDirectory);
-            remotePlaceholder = getFileResult.Placeholder;
 
-            // Handle new local file or file on server deleted
-            if (getFileResult.Status == NtStatus.STATUS_NOT_A_CLOUD_FILE)
-            {
-                // File not found on Server.... New local file or File deleted on Server.
-                // Do not raise any exception and continue processing
-                remotePlaceholder = null;
-            }
-            else
-            {
-                getFileResult.ThrowOnFailure();
-            }
-        }
-        else
-        {
+        //if (!IsExcludedFile(fullPath) && syncMode == SyncMode.Full)
+        //{
+        //    Styletronix.Debug.WriteLine("ServerProvider.GetFileInfo: " + fullPath);
+        //    GetFileInfoResult getFileResult = await SyncContext.ServerProvider.GetFileInfo(GetRelativePath(fullPath), localPlaceHolder.IsDirectory);
+        //    remotePlaceholder = getFileResult.Placeholder;
 
-        }
+        //    // Handle new local file or file on server deleted
+        //    if (getFileResult.Status == NtStatus.STATUS_NOT_A_CLOUD_FILE)
+        //    {
+        //        // File not found on Server.... New local file or File deleted on Server.
+        //        // Do not raise any exception and continue processing
+        //        remotePlaceholder = null;
+        //    }
+        //    else
+        //    {
+        //        getFileResult.ThrowOnFailure();
+        //    }
+        //}
 
-        await ProcessChangedDataAsync(fullPath, localPlaceHolder, remotePlaceholder, ctx);
+        await ProcessChangedDataAsync(fullPath, localPlaceHolder, new DynamicServerPlaceholder(GetRelativePath(fullPath), localPlaceHolder.IsDirectory, this.SyncContext), syncMode, ctx);
     }
-    private async Task ProcessChangedDataAsync(string fullPath, ExtendedPlaceholderState localPlaceHolder, Placeholder remotePlaceholder, CancellationToken ctx)
+    private async Task ProcessChangedDataAsync(string fullPath, ExtendedPlaceholderState localPlaceHolder, DynamicServerPlaceholder remotePlaceholder, SyncMode syncMode, CancellationToken ctx)
     {
         string relativePath = GetRelativePath(fullPath);
 
         // Convert to placeholder if required
-        if (!localPlaceHolder.ConvertToPlaceholder())
-        {
+        if (!localPlaceHolder.ConvertToPlaceholder(false))
             throw new Exception("Convert to Placeholder failed");
-        }
 
 
         // Ignore special files.
@@ -894,60 +948,65 @@ public partial class SyncProvider : IDisposable
 
 
         if (localPlaceHolder.PlaceholderInfoStandard.PinState == CF_PIN_STATE.CF_PIN_STATE_EXCLUDED)
-        {
             return;
-        }
 
         if (localPlaceHolder.IsDirectory)
         {
-            if (remotePlaceholder == null)
+            if (syncMode == SyncMode.Full)
             {
-                // Directory does not exist on Server
-                if (localPlaceHolder.PlaceholderState.HasFlag(CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_IN_SYNC))
+                if ((await remotePlaceholder.GetPlaceholder()) == null)
                 {
-                    // Directory remotely deleted if it was in sync.
-                    Styletronix.Debug.WriteLine("TODO: Remove local Directory if empty...", System.Diagnostics.TraceLevel.Warning);
-                    //Directory.Delete(localPlaceHolder.FullPath, false);
-                    return;
-                }
-                else
-                {
-                    // File locally created or modified while deleted on Server
-                    Styletronix.Debug.WriteLine("Create Directory on Server: " + relativePath, System.Diagnostics.TraceLevel.Info);
+                    // Directory does not exist on Server
+                    if (localPlaceHolder.PlaceholderState.HasFlag(CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_IN_SYNC))
+                    {
+                        // Directory remotely deleted if it was in sync.
+                        Styletronix.Debug.WriteLine("TODO: Remove local Directory if empty...", System.Diagnostics.TraceLevel.Warning);
+                        //Directory.Delete(localPlaceHolder.FullPath, false);
+                        return;
+                    }
+                    else
+                    {
+                        // File locally created or modified while deleted on Server
+                        Styletronix.Debug.WriteLine("Create Directory on Server: " + relativePath, System.Diagnostics.TraceLevel.Info);
 
-                    CreateFileResult creatResult = await SyncContext.ServerProvider.CreateFileAsync(relativePath, true);
-                    creatResult.ThrowOnFailure();
+                        CreateFileResult creatResult = await SyncContext.ServerProvider.CreateFileAsync(relativePath, true);
+                        creatResult.ThrowOnFailure();
 
-                    localPlaceHolder.UpdatePlaceholder(creatResult.Placeholder,
-                           CF_UPDATE_FLAGS.CF_UPDATE_FLAG_MARK_IN_SYNC).ThrowOnFailure();
+                        localPlaceHolder.UpdatePlaceholder(creatResult.Placeholder,
+                               CF_UPDATE_FLAGS.CF_UPDATE_FLAG_MARK_IN_SYNC).ThrowOnFailure();
 
-                    return;
+                        return;
+                    }
                 }
             }
         }
         else
         {
-            // New local file or remote deleted File
-            if (remotePlaceholder == null)
+            // Compare with remote file if Full Sync
+            if (syncMode == SyncMode.Full)
             {
-                // File does not exist on Server
-                if (localPlaceHolder.PlaceholderState.HasFlag(CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_IN_SYNC))
+                if ((await remotePlaceholder.GetPlaceholder()) == null)
+                // New local file or remote deleted File
                 {
-                    // File remotely deleted if it was in sync.
-                    MoveToRecycleBin(localPlaceHolder);
-                    return;
+                    // File does not exist on Server
+                    if (localPlaceHolder.PlaceholderState.HasFlag(CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_IN_SYNC))
+                    {
+                        // File remotely deleted if it was in sync.
+                        MoveToRecycleBin(localPlaceHolder);
+                        return;
+                    }
+                    else
+                    {
+                        // File locally created or modified while deleted on Server
+                        WriteFileCloseResult uploadFileToServerResult = await UploadFileToServer(fullPath, ctx);
+                        uploadFileToServerResult.ThrowOnFailure();
+                        return;
+                    }
                 }
-                else
-                {
-                    // File locally created or modified while deleted on Server
-                    WriteFileCloseResult uploadFileToServerResult = await UploadFileToServer(fullPath, ctx);
-                    uploadFileToServerResult.ThrowOnFailure();
-                    return;
-                }
-            }
 
-            // Validate ETag
-            ValidateETag(localPlaceHolder, remotePlaceholder);
+                // Validate ETag
+                ValidateETag(localPlaceHolder, (await remotePlaceholder.GetPlaceholder()));
+            }
 
 
             // local file full populated and out of sync
@@ -955,7 +1014,7 @@ public partial class SyncProvider : IDisposable
                 !localPlaceHolder.PlaceholderState.HasFlag(CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_PARTIAL))
             {
                 // Local File changed: Upload to Server
-                if (localPlaceHolder.LastWriteTime > remotePlaceholder.LastWriteTime)
+                if (await remotePlaceholder.GetPlaceholder() == null || ( localPlaceHolder.LastWriteTime > (await remotePlaceholder.GetPlaceholder()).LastWriteTime))
                 {
                     await UploadFileToServer(fullPath, ctx);
                     localPlaceHolder.Reload();
@@ -965,7 +1024,7 @@ public partial class SyncProvider : IDisposable
                     // Local File requires update...
                     if (localPlaceHolder.PlaceholderInfoStandard.PinState == CF_PIN_STATE.CF_PIN_STATE_PINNED)
                     {
-                        HydratePlaceholder(localPlaceHolder, remotePlaceholder);
+                        HydratePlaceholder(localPlaceHolder, await remotePlaceholder.GetPlaceholder());
                         return;
                     }
                     else
@@ -976,7 +1035,7 @@ public partial class SyncProvider : IDisposable
                             await CreatePreviousVersion(fullPath, ctx);
                         }
 
-                        localPlaceHolder.UpdatePlaceholder(remotePlaceholder,
+                        localPlaceHolder.UpdatePlaceholder(await remotePlaceholder.GetPlaceholder(),
                             CF_UPDATE_FLAGS.CF_UPDATE_FLAG_MARK_IN_SYNC | CF_UPDATE_FLAGS.CF_UPDATE_FLAG_DEHYDRATE).ThrowOnFailure();
 
                         return;
@@ -987,14 +1046,14 @@ public partial class SyncProvider : IDisposable
             // Dehydration requested
             if (localPlaceHolder.PlaceholderInfoStandard.PinState == CF_PIN_STATE.CF_PIN_STATE_UNPINNED)
             {
-                await DehydratePlaceholder(localPlaceHolder, remotePlaceholder, ctx);
+                await DehydratePlaceholder(localPlaceHolder, await remotePlaceholder.GetPlaceholder(), ctx);
                 return;
             }
 
             // Hydration requested
             if (localPlaceHolder.PlaceholderInfoStandard.PinState == CF_PIN_STATE.CF_PIN_STATE_PINNED && localPlaceHolder.PlaceholderState.HasFlag(CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_PARTIAL))
             {
-                HydratePlaceholder(localPlaceHolder, remotePlaceholder);
+                HydratePlaceholder(localPlaceHolder, await remotePlaceholder.GetPlaceholder());
                 return;
             }
 
@@ -1002,7 +1061,7 @@ public partial class SyncProvider : IDisposable
             if (localPlaceHolder.PlaceholderInfoStandard.InSyncState == CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_NOT_IN_SYNC &&
                 localPlaceHolder.PlaceholderState.HasFlag(CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_PARTIAL))
             {
-                localPlaceHolder.UpdatePlaceholder(remotePlaceholder,
+                localPlaceHolder.UpdatePlaceholder(await remotePlaceholder.GetPlaceholder(),
                     CF_UPDATE_FLAGS.CF_UPDATE_FLAG_DEHYDRATE | CF_UPDATE_FLAGS.CF_UPDATE_FLAG_MARK_IN_SYNC).ThrowOnFailure();
 
                 return;
@@ -1140,15 +1199,10 @@ public partial class SyncProvider : IDisposable
     }
     public bool IsExcludedFile(string relativeOrFullPath)
     {
-        if (relativeOrFullPath.IndexOf(@"$Recycle.Bin", System.StringComparison.CurrentCultureIgnoreCase) >= 0)
+        foreach (string match in fileExclusions)
         {
-            return true;
-        }
-
-        string fileName = Path.GetFileName(relativeOrFullPath);
-        if (fileExclusions.Contains(fileName, StringComparer.CurrentCultureIgnoreCase))
-        {
-            return true;
+            if (System.Text.RegularExpressions.Regex.IsMatch(relativeOrFullPath, match, System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+                return true;
         }
 
         return false;
@@ -1156,9 +1210,7 @@ public partial class SyncProvider : IDisposable
     public bool IsExcludedFile(string relativeOrFullPath, FileAttributes attributes)
     {
         if (attributes.HasFlag(FileAttributes.System) || attributes.HasFlag(FileAttributes.Temporary))
-        {
             return true;
-        }
 
         return IsExcludedFile(relativeOrFullPath);
     }
@@ -1211,6 +1263,7 @@ public partial class SyncProvider : IDisposable
 
         using FileStream fStream = new(fullPath, FileMode.Open, FileAccess.ReadWrite, FileShare.Read);
 
+        // Set to "NOT IN SYNC" to retry uploads if failed
         SetInSyncState(fStream.SafeFileHandle, CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_NOT_IN_SYNC);
 
         Placeholder localPlaceHolder = new(fullPath);
@@ -1226,7 +1279,7 @@ public partial class SyncProvider : IDisposable
             FileInfo = localPlaceHolder,
             CancellationToken = ctx,
             mode = UploadMode.FullFile,
-            ETag = null // TODO: ETAG hinzufügen
+            ETag = localPlaceHolder.ETag
         });
         openResult.ThrowOnFailure();
 
@@ -1344,6 +1397,7 @@ public partial class SyncProvider : IDisposable
         }
         else
         {
+            return fullPath;
             throw new NotSupportedException("Pad nicht unterstützt: " + fullPath);
         }
     }
@@ -1385,19 +1439,21 @@ public partial class SyncProvider : IDisposable
 
     public void ReportProviderProgress(CF_TRANSFER_KEY transferKey, long total, long completed, string relativePath)
     {
+        // Report progress to System
         HRESULT ret = CfReportProviderProgress(SyncContext.ConnectionKey, transferKey, total, completed);
         Styletronix.Debug.LogResponse(ret);
 
+
+        // Report progress to components
         try
         {
-            FileProgressEvent?.Invoke(this, new FileProgress(relativePath, completed, total));
+            FileProgressEvent?.Invoke(this, new FileProgressEventArgs(relativePath, completed, total));
         }
         catch (Exception ex)
         {
             Styletronix.Debug.LogException(ex);
         }
     }
-
 
     private CF_OPERATION_INFO CreateOPERATION_INFO(in CF_CALLBACK_INFO CallbackInfo, CF_OPERATION_TYPE OperationType)
     {

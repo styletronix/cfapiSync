@@ -55,7 +55,16 @@ namespace CfapiSync_GUI
         {
             MessageQueue.Enqueue(e.Message);
         }
-
+        private string GetAssemblyGUID()
+        {
+            string id = "";
+            foreach (object attr in System.Reflection.Assembly.GetExecutingAssembly().GetCustomAttributes(true))
+            {
+                if (attr is System.Runtime.InteropServices.GuidAttribute)
+                    id = ((System.Runtime.InteropServices.GuidAttribute)attr).Value;
+            }
+            return id;
+        }
         private void InitProvider()
         {
             textBox_localPath.Enabled = false;
@@ -64,11 +73,11 @@ namespace CfapiSync_GUI
 
             if (SyncProvider == null)
             {
-                SyncProviderParameters param = new SyncProviderParameters()
+                SyncProviderParameters param = new()
                 {
                     ProviderInfo = new BasicSyncProviderInfo()
                     {
-                        ProviderId = Guid.Parse(@"fdf0b5bb-be08-4544-b6f6-fa954e869a87"),  // ProviderID must be unique for each Application
+                        ProviderId = Guid.Parse(GetAssemblyGUID()),  // ProviderID must be unique for each Application
                         ProviderName = textBox_Caption.Text,
                         ProviderVersion = Application.ProductVersion
                     },
@@ -90,7 +99,7 @@ namespace CfapiSync_GUI
         {
             QueueStatus = e.ToString();
         }
-        private void SyncProvider_FileProgressEvent(object sender, FileProgress e)
+        private void SyncProvider_FileProgressEvent(object sender, FileProgressEventArgs e)
         {
             Progress = e.Progress;
         }

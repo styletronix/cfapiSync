@@ -9,7 +9,7 @@ public partial class LocalNetworkServerProvider
         internal readonly FileSystemWatcher fileSystemWatcher;
         private readonly LocalNetworkServerProvider serverProvider;
         private bool disposedValue;
-        private readonly System.Threading.Tasks.Dataflow.ActionBlock<FileChangedEventArgs> fileChangedActionBlock;
+        public readonly System.Threading.Tasks.Dataflow.ActionBlock<FileChangedEventArgs> fileChangedActionBlock;
 
         public ServerCallback(LocalNetworkServerProvider serverProvider)
         {
@@ -40,43 +40,11 @@ public partial class LocalNetworkServerProvider
 
         private void FileSystemWatcher_Error(object sender, ErrorEventArgs e)
         {
-            Exception x = e.GetException();
-            if (x.HResult == -2147467259)
-            {
-                System.Threading.Tasks.Task.Delay(5000).ContinueWith((t) =>
-                {
-                    fileSystemWatcher.EnableRaisingEvents = false;
-                    fileSystemWatcher.EnableRaisingEvents = true;
+            fileSystemWatcher.EnableRaisingEvents = false;
 
-                    try
-                    {
-                        fileChangedActionBlock.Post(new FileChangedEventArgs()
-                        {
-                            ChangeType = WatcherChangeTypes.All,
-                            ResyncSubDirectories = true,
-                            Placeholder = new(serverProvider.Parameter.ServerPath, serverProvider.GetRelativePath(serverProvider.Parameter.ServerPath))
-                        });
-                    }
-                    catch (Exception ex)
-                    {
-                        Styletronix.Debug.WriteLine(ex.Message, System.Diagnostics.TraceLevel.Error);
-                    }
-                });
-            }
-
-            try
-            {
-                fileChangedActionBlock.Post(new FileChangedEventArgs()
-                {
-                    ChangeType = WatcherChangeTypes.All,
-                    ResyncSubDirectories = true,
-                    Placeholder = new(serverProvider.Parameter.ServerPath, serverProvider.GetRelativePath(serverProvider.Parameter.ServerPath))
-                });
-            }
-            catch (Exception ex)
-            {
-                Styletronix.Debug.WriteLine(ex.Message, System.Diagnostics.TraceLevel.Error);
-            }
+            // Set ServerProviderState to FAILED.
+            // Connection Monitoring will trigger a FullSync if connection could be reestablished.
+            serverProvider.SetProviderStatus(ServerProviderStatus.Failed);
         }
 
         private void FileSystemWatcher_Changed(object sender, FileSystemEventArgs e)

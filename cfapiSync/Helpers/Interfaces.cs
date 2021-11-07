@@ -2,6 +2,7 @@
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using Vanara.PInvoke;
 using static Styletronix.CloudFilterApi;
 using static Vanara.PInvoke.CldApi;
 
@@ -78,6 +79,9 @@ namespace Styletronix.CloudSyncProvider
         }
         public Placeholder Placeholder;
     }
+    /// <summary>
+    /// Preferred Settings are used by the Sync Provider to change parmeters depending on the used ServerProvider.
+    /// </summary>
     public class PreferredSettings
     {
         /// <summary>
@@ -93,6 +97,8 @@ namespace Styletronix.CloudSyncProvider
         /// ETag is used to validate the file consistence before starting partial updates.
         /// </summary>
         public bool AllowPartialUpdate = true;
+
+        public bool PreferFullDirSync = false;
     }
 
 
@@ -202,12 +208,13 @@ namespace Styletronix.CloudSyncProvider
     }
     public enum ServerProviderStatus
     {
-        Connected,
-        Connecting,
-        Disconnected,
+        Disabled = 0, // Connection is disabled. No retry possible. 
+        AuthenticationRequired = 1, // Authentication is required. Retry based on ServerProvider decision
 
-        AuthenticationRequired,
-        Failed
+        Failed = 10, // Retry based on ServerProvider decision
+        Disconnected = 11, // Retry required by ServerProvider.
+        Connecting = 12, // ServerProvider tries to connect.
+        Connected = 13,// ServerProvider connected to cloud
     }
     public enum FileChangedType
     {
@@ -226,7 +233,57 @@ namespace Styletronix.CloudSyncProvider
         Full
     }
 
+    //The Dynamic Placeholder provides a way to supply a already downloaded remote placeholder or to get the remote placeholder on demand instead of always downloading remote date even if it may not be required.
+    public class DynamicServerPlaceholder
+    {
+        private readonly string _relativePath;
+        private readonly SyncContext _syncContext;
+        private Placeholder _placeholder;
+        private readonly bool _isDirectory;
 
+        public DynamicServerPlaceholder(string relativePath, bool isDirectory, SyncContext syncContext)
+        {
+            this._relativePath = relativePath;
+            this._syncContext = syncContext;
+            this._isDirectory = isDirectory;
+        }
+        public DynamicServerPlaceholder(Placeholder placeholder)
+        {
+            this._placeholder = placeholder;
+        }
+
+        public async Task<Placeholder> GetPlaceholder()
+        {
+            if (_placeholder == null && !string.IsNullOrWhiteSpace(this._relativePath))
+            {
+                if (!this._syncContext.SyncProvider.IsExcludedFile(this._relativePath))
+                {
+                    Styletronix.Debug.WriteLine("ServerProvider.GetFileInfo: " + this._relativePath);
+                    GetFileInfoResult getFileResult = await _syncContext.ServerProvider.GetFileInfo(this._relativePath, this._isDirectory);
+                    _placeholder = getFileResult.Placeholder;
+
+                    // Handle new local file or file on server deleted
+                    if (getFileResult.Status == NtStatus.STATUS_NOT_A_CLOUD_FILE)
+                    {
+                        // File not found on Server.... New local file or File deleted on Server.
+                        // Do not raise any exception and continue processing
+                        _placeholder = null;
+                    }
+                    else
+                    {
+                        getFileResult.ThrowOnFailure();
+                    }
+                }
+            }
+
+            return _placeholder;
+        }
+
+        public static explicit operator DynamicServerPlaceholder(Placeholder placeholder)
+        {
+            return new DynamicServerPlaceholder(placeholder);
+        }
+    }
     public class Placeholder : BasicFileInfo
     {
         public Placeholder(FileSystemInfo fileInfo)
@@ -302,6 +359,12 @@ namespace Styletronix.CloudSyncProvider
         {
             Succeeded = true;
             Status = CloudFilterApi.NtStatus.STATUS_SUCCESS;
+            Message = Status.ToString();
+        }
+        public GenericResult(bool succeeded)
+        {
+            Succeeded = succeeded;
+            Status = succeeded ? CloudFilterApi.NtStatus.STATUS_SUCCESS : CloudFilterApi.NtStatus.STATUS_UNSUCCESSFUL;
             Message = Status.ToString();
         }
         public GenericResult(Exception ex)
@@ -480,7 +543,7 @@ namespace Styletronix.CloudSyncProvider
         public int RetryCount;
     }
 
-    public class FileProgress
+    public class FileProgressEventArgs : EventArgs
     {
         private long _BytesCompleted;
         private long _BytesTotal;
@@ -488,7 +551,7 @@ namespace Styletronix.CloudSyncProvider
         public string relativeFilePath;
         public short Progress;
 
-        public FileProgress(string relativeFilePath, long fileBytesCompleted, long fileBytesTotal)
+        public FileProgressEventArgs(string relativeFilePath, long fileBytesCompleted, long fileBytesTotal)
         {
             this.relativeFilePath = relativeFilePath;
             FileBytesCompleted = fileBytesCompleted;
@@ -551,6 +614,7 @@ namespace Styletronix.CloudSyncProvider
 
         public IServerFileProvider ServerProvider;
         public SyncProviderParameters SyncProviderParameter;
+        public SyncProvider SyncProvider;
     }
 
     public class DataActions
@@ -587,5 +651,12 @@ namespace Styletronix.CloudSyncProvider
         public byte PriorityHint;
     }
 
-   
+    public class SyncProviderStatusEventArgs : EventArgs
+    {
+        public long QueueLength;
+        public long RetryQueueLength;
+        public ServerProviderStatus ServerProviderStatus;
+
+        // TODO: Additional status messages
+    }
 }

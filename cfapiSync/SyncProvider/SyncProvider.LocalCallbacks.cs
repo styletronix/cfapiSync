@@ -21,7 +21,7 @@ public partial class SyncProvider
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, CancellationTokenSource> FetchPlaceholdersCancellationTokens = new();
     private readonly ActionBlock<DeleteAction> DeleteQueue;
     private readonly FileRangeManager fileRangeManager = new();
-    public event EventHandler<FileProgress> FileProgressEvent;
+    public event EventHandler<FileProgressEventArgs> FileProgressEvent;
 
     private readonly string[] ExcludedProcessesForFetchPlaceholders = new string[] {
         @".*\\SearchProtocolHost\.exe.*", // This process tries to index folders which are just a few seconds before marked as "ENABLE_ON_DEMAND_POPULATION" which results in unwanted repopulation.
@@ -36,6 +36,7 @@ public partial class SyncProvider
 
         if (!cancelFetch)
         {
+            // Get Process info to
             CF_PROCESS_INFO processInfo = Marshal.PtrToStructure<CF_PROCESS_INFO>(CallbackInfo.ProcessInfo);
             foreach (string process in ExcludedProcessesForFetchPlaceholders)
             {
@@ -92,10 +93,32 @@ public partial class SyncProvider
     }
     public void FETCH_DATA(in CF_CALLBACK_INFO CallbackInfo, in CF_CALLBACK_PARAMETERS CallbackParameters)
     {
+        bool cancelFetch = SyncContext.ServerProvider.Status != ServerProviderStatus.Connected;
+
+        if (cancelFetch)
+        {
+            Styletronix.Debug.WriteLine(@"FETCH_DATA Cancelling due to disconnected Server Provider", System.Diagnostics.TraceLevel.Info);
+
+            var opInfo = CreateOPERATION_INFO(CallbackInfo, CF_OPERATION_TYPE.CF_OPERATION_TYPE_TRANSFER_DATA);
+            CF_OPERATION_PARAMETERS.TRANSFERDATA TpParam = new()
+            {
+                Length = CallbackParameters.FetchData.RequiredLength,
+                Offset = CallbackParameters.FetchData.RequiredFileOffset,
+                Buffer = IntPtr.Zero,
+                Flags = CF_OPERATION_TRANSFER_DATA_FLAGS.CF_OPERATION_TRANSFER_DATA_FLAG_NONE,
+                CompletionStatus = new NTStatus((uint)NtStatus.STATUS_CLOUD_FILE_NETWORK_UNAVAILABLE)
+            };
+            CF_OPERATION_PARAMETERS opParams = CF_OPERATION_PARAMETERS.Create(TpParam);
+            Styletronix.Debug.LogResponse(CfExecute(opInfo, ref opParams));
+            return;
+        }
+
+
         Styletronix.Debug.WriteLine(@"FETCH_DATA: Priority " + CallbackInfo.PriorityHint +
             @" / R " + CallbackParameters.FetchData.RequiredFileOffset + @" - " + CallbackParameters.FetchData.RequiredLength +
             @" / O " + CallbackParameters.FetchData.OptionalFileOffset + @" - " + CallbackParameters.FetchData.OptionalLength +
             @" / " + CallbackInfo.NormalizedPath, System.Diagnostics.TraceLevel.Info);
+
 
         long length = CallbackParameters.FetchData.RequiredLength;
         long offset = CallbackParameters.FetchData.RequiredFileOffset;
@@ -142,14 +165,11 @@ public partial class SyncProvider
     }
     public void NOTIFY_FILE_CLOSE_COMPLETION(in CF_CALLBACK_INFO CallbackInfo, in CF_CALLBACK_PARAMETERS CallbackParameters)
     {
-        //Styletronix.Debug.WriteLine("NOTIFY_FILE_CLOSE_COMPLETION: " + CallbackInfo.NormalizedPath);
+        Styletronix.Debug.WriteLine("NOTIFY_FILE_CLOSE_COMPLETION: " + CallbackInfo.NormalizedPath);
     }
     public void NOTIFY_DELETE(in CF_CALLBACK_INFO CallbackInfo, in CF_CALLBACK_PARAMETERS CallbackParameters)
     {
-        if (MaintenanceInProgress)
-        {
-            return;
-        }
+        if (MaintenanceInProgress) return;
 
         DeleteQueue.Post(new DeleteAction()
         {
@@ -171,10 +191,6 @@ public partial class SyncProvider
 
         Styletronix.Debug.WriteLine("NOTIFY_RENAME: " + CallbackInfo.NormalizedPath + " -> " + CallbackParameters.Rename.TargetPath, System.Diagnostics.TraceLevel.Info);
 
-        if (CallbackParameters.Rename.TargetPath.StartsWith(@"\$Recycle.Bin\"))
-        {
-
-        }
         CF_OPERATION_INFO opInfo = CreateOPERATION_INFO(CallbackInfo, CF_OPERATION_TYPE.CF_OPERATION_TYPE_ACK_RENAME);
 
         NOTIFY_RENAME_Internal(GetRelativePath(CallbackInfo), GetRelativePath(CallbackParameters.Rename),
@@ -185,14 +201,34 @@ public partial class SyncProvider
     {
         Styletronix.Debug.WriteLine("NOTIFY_RENAME_COMPLETION: " + CallbackParameters.RenameCompletion.SourcePath + " -> " + CallbackInfo.NormalizedPath, System.Diagnostics.TraceLevel.Verbose);
     }
+    private async void FileSystemWatcher_OnError(object sender, ErrorEventArgs e)
+    {
+        Styletronix.Debug.WriteLine("FileSystemWatcher Error: " + e.GetException().Message, System.Diagnostics.TraceLevel.Warning);
+
+        await Task.Delay(2000, GlobalShutDownToken).ConfigureAwait(false);
+        _ = SyncDataAsync(SyncMode.Local, GlobalShutDownToken).ConfigureAwait(false);
+    }
+    private void FileSystemWatcher_OnChanged(object sender, FileSystemEventArgs e)
+    {
+        if (IsExcludedFile(e.FullPath))
+            return;
+
+        if (SyncContext.ServerProvider.PreferredServerProviderSettings.PreferFullDirSync)
+        {
+            if(SyncContext.ServerProvider.Status == ServerProviderStatus.Connected)
+                LocalSyncTimer.Change(TimeSpan.FromSeconds(5), LocalSyncTimerInterval);
+        }
+        else
+        {
+            AddFileToChangeQueue(e.FullPath, false);
+        }
+    }
 
 
     private void AddFileToChangeQueue(string fullPath, bool ignoreLock)
     {
         if (MaintenanceInProgress)
-        {
             return;
-        }
 
         ChangedDataQueue.TryAdd(fullPath, ignoreLock);
     }
@@ -212,6 +248,7 @@ public partial class SyncProvider
         // - Get next partial file list
         // - Repeat until completed.
         // - Compare full list after last CFExecute.
+        // - Use pattern
 
         try
         {
@@ -305,17 +342,13 @@ public partial class SyncProvider
 
     public async void NOTIFY_RENAME_Internal(string RelativeFileName, string RelativeFileNameDestination, bool isDirectory, CF_OPERATION_INFO opInfo)
     {
-        if (MaintenanceInProgress)
-        {
-            return;
-        }
+        if (MaintenanceInProgress) return;
 
         using var lockItem = this.ChangedDataQueue.LockItem(GetLocalFullPath(RelativeFileName));
 
-
         NTStatus status;
 
-        if (!RelativeFileNameDestination.StartsWith(@"\$Recycle.Bin\", StringComparison.CurrentCultureIgnoreCase))
+        if (!IsExcludedFile(RelativeFileName) && !IsExcludedFile(RelativeFileNameDestination))
         {
             MoveFileResult result = await SyncContext.ServerProvider.MoveFileAsync(RelativeFileName, RelativeFileNameDestination, isDirectory);
             if (result.Succeeded)
@@ -343,61 +376,63 @@ public partial class SyncProvider
     }
     private async Task NOTIFY_DELETE_Action(DeleteAction dat)
     {
-        if (MaintenanceInProgress)
+        if (MaintenanceInProgress) return;
+
+        NTStatus status;
+
+        if (SyncContext.ServerProvider.Status != ServerProviderStatus.Connected)
         {
+            CF_OPERATION_PARAMETERS opParams1 = CF_OPERATION_PARAMETERS.Create(new CF_OPERATION_PARAMETERS.ACKDELETE
+            {
+                Flags = CF_OPERATION_ACK_DELETE_FLAGS.CF_OPERATION_ACK_DELETE_FLAG_NONE,
+                CompletionStatus = new NTStatus((uint)NtStatus.STATUS_CLOUD_FILE_NETWORK_UNAVAILABLE)
+            });
+            Styletronix.Debug.LogResponse(CfExecute(dat.OpInfo, ref opParams1));
             return;
         }
 
-        //suspendLocalFileChangeHandling.BeginSuspension();
-        try
+        string fullPath = SyncContext.LocalRootFolder + "\\" + dat.RelativePath;
+        using var lockFile = this.ChangedDataQueue.LockItem(fullPath);
+
+        if (IsExcludedFile(dat.RelativePath))
         {
-            NTStatus status;
-            string fullPath = SyncContext.LocalRootFolder + "\\" + dat.RelativePath;
-            if (IsExcludedFile(dat.RelativePath))
-            {
-                status = NTStatus.STATUS_SUCCESS;
-                goto skip;
-            }
-
-            if (!(dat.IsDirectory ? Directory.Exists(fullPath) : File.Exists(fullPath)))
-            {
-                status = NTStatus.STATUS_SUCCESS;
-                goto skip;
-            }
-
-            ExtendedPlaceholderState pl = new(fullPath);
-            if (pl.PlaceholderInfoStandard.PinState == CF_PIN_STATE.CF_PIN_STATE_EXCLUDED)
-            {
-                status = NTStatus.STATUS_SUCCESS;
-                goto skip;
-            }
-
-            DeleteFileResult result = await SyncContext.ServerProvider.DeleteFileAsync(dat.RelativePath, dat.IsDirectory);
-            if (result.Succeeded)
-            {
-                Styletronix.Debug.WriteLine("Deleted on Server: " + dat.RelativePath, System.Diagnostics.TraceLevel.Verbose);
-            }
-            else
-            {
-                Styletronix.Debug.WriteLine("Delete on Server FAILED " + result.Status.ToString() + ": " + dat.RelativePath, System.Diagnostics.TraceLevel.Warning); ;
-            }
-            status = (int)result.Status;
-
-
-        skip:
-            CF_OPERATION_PARAMETERS opParams = CF_OPERATION_PARAMETERS.Create(new CF_OPERATION_PARAMETERS.ACKDELETE
-            {
-                Flags = CF_OPERATION_ACK_DELETE_FLAGS.CF_OPERATION_ACK_DELETE_FLAG_NONE,
-                CompletionStatus = status
-            });
-
-            Styletronix.Debug.LogResponse(CfExecute(dat.OpInfo, ref opParams));
-        }
-        finally
-        {
-            //suspendLocalFileChangeHandling.EndSuspension();
+            status = NTStatus.STATUS_SUCCESS;
+            goto skip;
         }
 
+        if (!(dat.IsDirectory ? Directory.Exists(fullPath) : File.Exists(fullPath)))
+        {
+            status = NTStatus.STATUS_SUCCESS;
+            goto skip;
+        }
+
+        ExtendedPlaceholderState pl = new(fullPath);
+        if (pl.PlaceholderInfoStandard.PinState == CF_PIN_STATE.CF_PIN_STATE_EXCLUDED)
+        {
+            status = NTStatus.STATUS_SUCCESS;
+            goto skip;
+        }
+
+        DeleteFileResult result = await SyncContext.ServerProvider.DeleteFileAsync(dat.RelativePath, dat.IsDirectory);
+        if (result.Succeeded)
+        {
+            Styletronix.Debug.WriteLine("Deleted on Server: " + dat.RelativePath, System.Diagnostics.TraceLevel.Verbose);
+        }
+        else
+        {
+            Styletronix.Debug.WriteLine("Delete on Server FAILED " + result.Status.ToString() + ": " + dat.RelativePath, System.Diagnostics.TraceLevel.Warning); ;
+        }
+        status = new NTStatus((uint)result.Status);
+
+
+    skip:
+        CF_OPERATION_PARAMETERS opParams = CF_OPERATION_PARAMETERS.Create(new CF_OPERATION_PARAMETERS.ACKDELETE
+        {
+            Flags = CF_OPERATION_ACK_DELETE_FLAGS.CF_OPERATION_ACK_DELETE_FLAG_NONE,
+            CompletionStatus = status
+        });
+
+        Styletronix.Debug.LogResponse(CfExecute(dat.OpInfo, ref opParams));
     }
 
 
@@ -834,11 +869,11 @@ public partial class SyncProvider
         private readonly AutoResetEventAsync autoResetEventAsync = new();
         private readonly CancellationTokenSource CancellationTokenSource = new();
         private readonly System.Collections.Concurrent.ConcurrentDictionary<t, int> LockTable = new();
-        private readonly System.Threading.Timer AddTimer;
+        private readonly Timer AddTimer;
 
         public CancellationToken CancellationToken => CancellationTokenSource.Token;
-        public int RestartDelay = 2000;
-        public int WaitForAddingCompleted = 2000;
+        public int RestartDelay = 1000;
+        public int WaitForAddingCompleted = 4000;
 
         public MultiQueue()
         {
@@ -859,9 +894,7 @@ public partial class SyncProvider
                    {
                        await autoResetEventAsync.WaitAsync(CancellationToken).ConfigureAwait(false);
                        if (RestartDelay > 0)
-                       {
                            await Task.Delay(RestartDelay);
-                       }
 
                        return await WaitTakeNextAsync();
                    }, CancellationToken);
@@ -915,9 +948,7 @@ public partial class SyncProvider
                 if (!itemsToProcess.Contains(data))
                 {
                     if (!ignoreLock && IsItemLocked(data))
-                    {
                         return false;
-                    }
 
                     itemsToProcess.Add(data);
 

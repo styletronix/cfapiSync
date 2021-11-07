@@ -20,7 +20,6 @@ namespace Styletronix
 
             public ExtendedPlaceholderState(string fullPath)
             {
-                //Styletronix.Debug.WriteLine("New ExtendedPlaceholderState: " + fullPath, System.Diagnostics.TraceLevel.Verbose);
                 _FullPath = fullPath;
 
                 using Kernel32.SafeSearchHandle findHandle = Kernel32.FindFirstFile(@"\\?\" + _FullPath, out WIN32_FIND_DATA findData);
@@ -28,8 +27,6 @@ namespace Styletronix
             }
             public ExtendedPlaceholderState(WIN32_FIND_DATA findData, string directory)
             {
-                //Styletronix.Debug.WriteLine("New ExtendedPlaceholderState: " + findData.cFileName, System.Diagnostics.TraceLevel.Verbose);
-
                 if (!string.IsNullOrEmpty(directory)) { _FullPath = directory + "\\" + findData.cFileName; }
                 _FindData = findData;
 
@@ -77,7 +74,7 @@ namespace Styletronix
                 if (!IsPlaceholder) { return new GenericResult(NtStatus.STATUS_NOT_A_CLOUD_FILE); }
                 if (PlaceholderInfoStandard.InSyncState == inSyncState) { return new GenericResult(); }
 
-                Debug.WriteLine("SetInSyncState " + _FullPath + " " + inSyncState.ToString(), System.Diagnostics.TraceLevel.Info);
+                Debug.WriteLine("SetInSyncState " + _FullPath + " " + inSyncState.ToString(), System.Diagnostics.TraceLevel.Verbose);
 
                 HRESULT res = CfSetInSyncState(SafeFileHandleForCldApi, inSyncState, CF_SET_IN_SYNC_FLAGS.CF_SET_IN_SYNC_FLAG_NONE);
 
@@ -116,61 +113,43 @@ namespace Styletronix
             /// </summary>
             /// <param name="fileIdString"></param>
             /// <returns></returns>
-            public bool ConvertToPlaceholder()
+            public GenericResult ConvertToPlaceholder(bool markInSync)
             {
-                if (string.IsNullOrEmpty(_FullPath)) { return false; }
-                if (IsPlaceholder) { return true; }
+                if (string.IsNullOrEmpty(_FullPath)) { return new GenericResult(NtStatus.STATUS_UNSUCCESSFUL); }
+                if (IsPlaceholder) { return new GenericResult(NtStatus.STATUS_SUCCESS); }
 
-                Debug.WriteLine("ConvertToPlaceholder " + _FullPath, System.Diagnostics.TraceLevel.Info);
+                Debug.WriteLine("ConvertToPlaceholder " + _FullPath, System.Diagnostics.TraceLevel.Verbose);
 
                 using SafeOpenFileWithOplock fHandle = new(_FullPath, CF_OPEN_FILE_FLAGS.CF_OPEN_FILE_FLAG_EXCLUSIVE);
 
                 if (fHandle.IsInvalid)
                 {
                     Debug.WriteLine("ConvertToPlaceholder FAILED: Invalid Handle!", System.Diagnostics.TraceLevel.Warning);
-                    return false;
+                    return new GenericResult(NtStatus.STATUS_UNSUCCESSFUL);
                 }
 
-                bool isExcluded = false;
-                bool pinStateSet = false;
-
-                if (System.IO.Path.GetFileName(_FullPath).Equals(@"$Recycle.bin", StringComparison.CurrentCultureIgnoreCase))
-                {
-                    isExcluded = true;
-                }
-
-                CF_CONVERT_FLAGS flags = isExcluded ? CF_CONVERT_FLAGS.CF_CONVERT_FLAG_MARK_IN_SYNC : CF_CONVERT_FLAGS.CF_CONVERT_FLAG_ENABLE_ON_DEMAND_POPULATION;
+                CF_CONVERT_FLAGS flags = markInSync ? CF_CONVERT_FLAGS.CF_CONVERT_FLAG_MARK_IN_SYNC : CF_CONVERT_FLAGS.CF_CONVERT_FLAG_ENABLE_ON_DEMAND_POPULATION;
 
                 HRESULT res;
                 int fileIDSize = FileId.Length * Marshal.SizeOf(FileId[0]);
+
                 unsafe
                 {
                     fixed (void* fileID = FileId)
                     {
-                        long* usnPtr = (long*)0;
                         res = CfConvertToPlaceholder(fHandle, (IntPtr)fileID, (uint)fileIDSize, flags, out long usn);
                     }
                 }
 
-                if (res.Succeeded && isExcluded)
-                {
-                    pinStateSet = SetPinState(CF_PIN_STATE.CF_PIN_STATE_EXCLUDED);
-                }
-
                 if (res.Succeeded)
                 {
-                    if (!pinStateSet)
-                    {
                         Reload();
-                    }
                 }
                 else
                 {
                     Debug.WriteLine("ConvertToPlaceholder FAILED: Error " + res.Code, System.Diagnostics.TraceLevel.Error);
                 }
-                return res.Succeeded;
-
-
+                return new GenericResult(res.Succeeded);
             }
             public GenericResult RevertPlaceholder(bool allowDataLoos)
             {
@@ -189,7 +168,7 @@ namespace Styletronix
                     };
                 }
 
-                Debug.WriteLine("RevertPlaceholder " + _FullPath, System.Diagnostics.TraceLevel.Info);
+                Debug.WriteLine("RevertPlaceholder " + _FullPath, System.Diagnostics.TraceLevel.Verbose);
 
                 using SafeOpenFileWithOplock fHandle = new(_FullPath, CF_OPEN_FILE_FLAGS.CF_OPEN_FILE_FLAG_EXCLUSIVE);
 
@@ -233,7 +212,7 @@ namespace Styletronix
                 if (!IsPlaceholder) { return new GenericResult(NtStatus.STATUS_NOT_A_CLOUD_FILE); }
                 if (PlaceholderInfoStandard.PinState == CF_PIN_STATE.CF_PIN_STATE_PINNED) { return new GenericResult(NtStatus.STATUS_CLOUD_FILE_PINNED); }
 
-                Debug.WriteLine("DehydratePlaceholder " + _FullPath, System.Diagnostics.TraceLevel.Info);
+                Debug.WriteLine("DehydratePlaceholder " + _FullPath, System.Diagnostics.TraceLevel.Verbose);
 
                 HRESULT res = CfDehydratePlaceholder(SafeFileHandleForCldApi, 0, -1, CF_DEHYDRATE_FLAGS.CF_DEHYDRATE_FLAG_NONE);
                 if (res.Succeeded)
@@ -258,7 +237,7 @@ namespace Styletronix
                 if (string.IsNullOrEmpty(_FullPath)) { return new GenericResult(CloudExceptions.FileOrDirectoryNotFound); }
                 if (!IsPlaceholder) { return new GenericResult(NtStatus.STATUS_CLOUD_FILE_NOT_SUPPORTED); }
 
-                Debug.WriteLine("HydratePlaceholder " + _FullPath, System.Diagnostics.TraceLevel.Info);
+                Debug.WriteLine("HydratePlaceholder " + _FullPath, System.Diagnostics.TraceLevel.Verbose);
 
                 HRESULT res = CfHydratePlaceholder(SafeFileHandleForCldApi, 0, -1, CF_HYDRATE_FLAGS.CF_HYDRATE_FLAG_NONE);
 
@@ -305,7 +284,7 @@ namespace Styletronix
                 if (!IsPlaceholder) { return false; }
                 if (((int)PlaceholderInfoStandard.PinState) == ((int)state)) { return true; }
 
-                Debug.WriteLine("SetPinState " + _FullPath + " " + state.ToString(), System.Diagnostics.TraceLevel.Info);
+                Debug.WriteLine("SetPinState " + _FullPath + " " + state.ToString(), System.Diagnostics.TraceLevel.Verbose);
                 HRESULT res = CfSetPinState(SafeFileHandleForCldApi, state, CF_SET_PIN_FLAGS.CF_SET_PIN_FLAG_NONE);
 
                 if (res.Succeeded)
@@ -333,8 +312,9 @@ namespace Styletronix
                 if (string.IsNullOrEmpty(_FullPath)) { return false; }
                 if (!IsPlaceholder) { return false; }
                 if (!IsDirectory) { return false; }
+                if (this.PlaceholderState.HasFlag(CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_PARTIAL)) { return true; }
 
-                Debug.WriteLine("EnableOnDemandPopulation " + _FullPath, System.Diagnostics.TraceLevel.Info);
+                Debug.WriteLine("EnableOnDemandPopulation " + _FullPath, System.Diagnostics.TraceLevel.Verbose);
 
                 using SafeOpenFileWithOplock fHandle = new(_FullPath, CF_OPEN_FILE_FLAGS.CF_OPEN_FILE_FLAG_NONE);
 
@@ -361,7 +341,50 @@ namespace Styletronix
                 {
                     //Reload of Placeholder after EnableOnDemandPopulation triggers FETCH_PLACEHOLDERS  
                     //Reload();
-                    PlaceholderState |= CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_PARTIAL;
+                    PlaceholderState |= CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_PARTIAL | CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_PARTIALLY_ON_DISK;
+                }
+                else
+                {
+                    Debug.WriteLine("ConvertToPlaceholder FAILED: Error " + res.Code, System.Diagnostics.TraceLevel.Warning);
+                }
+                return res.Succeeded;
+            }
+            public bool DisableOnDemandPopulation()
+            {
+                if (string.IsNullOrEmpty(_FullPath)) { return false; }
+                if (!IsPlaceholder) { return false; }
+                if (!IsDirectory) { return false; }
+                if (!this.PlaceholderState.HasFlag(CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_PARTIAL)) { return true; }
+
+                Debug.WriteLine("EnableOnDemandPopulation " + _FullPath, System.Diagnostics.TraceLevel.Verbose);
+
+                using SafeOpenFileWithOplock fHandle = new(_FullPath, CF_OPEN_FILE_FLAGS.CF_OPEN_FILE_FLAG_NONE);
+
+                if (fHandle.IsInvalid)
+                {
+                    Debug.WriteLine("EnableOnDemandPopulation FAILED: Invalid Handle!", System.Diagnostics.TraceLevel.Warning);
+                    return false;
+                }
+
+                HRESULT res;
+
+                int fileIDSize = FileId.Length * Marshal.SizeOf(FileId[0]);
+                long usn = 0;
+
+                unsafe
+                {
+                    fixed (void* fileID = FileId)
+                    {
+                        res = CfUpdatePlaceholder(fHandle, new CF_FS_METADATA(), (IntPtr)fileID, (uint)fileIDSize, null, 0, CF_UPDATE_FLAGS.CF_UPDATE_FLAG_DISABLE_ON_DEMAND_POPULATION, ref usn);
+                    }
+                }
+
+                if (res.Succeeded)
+                {
+                    //Reload of Placeholder after EnableOnDemandPopulation triggers FETCH_PLACEHOLDERS  
+                    //Reload();
+                    PlaceholderState ^= CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_PARTIAL;
+                    PlaceholderState ^= CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_PARTIALLY_ON_DISK;
                 }
                 else
                 {
@@ -379,7 +402,7 @@ namespace Styletronix
                 if (string.IsNullOrEmpty(_FullPath)) { return new GenericResult(CloudExceptions.FileOrDirectoryNotFound); }
                 if (!IsPlaceholder) { return new GenericResult(NtStatus.STATUS_CLOUD_FILE_NOT_SUPPORTED); }
 
-                Debug.WriteLine("UpdatePlaceholder " + _FullPath + " Flags: " + cF_UPDATE_FLAGS.ToString(), System.Diagnostics.TraceLevel.Info);
+                Debug.WriteLine("UpdatePlaceholder " + _FullPath + " Flags: " + cF_UPDATE_FLAGS.ToString(), System.Diagnostics.TraceLevel.Verbose);
                 GenericResult res = new();
 
                 using SafeOpenFileWithOplock fHandle = new(_FullPath, CF_OPEN_FILE_FLAGS.CF_OPEN_FILE_FLAG_EXCLUSIVE);

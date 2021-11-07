@@ -21,8 +21,12 @@ public partial class LocalNetworkServerProvider : IServerFileProvider
         {
             AllowPartialUpdate = true,
             MaxChunkSize = int.MaxValue,
-            MinChunkSize = 4096
+            MinChunkSize = 4096,
+            PreferFullDirSync = true
         };
+
+        connectionTimer = new(ConnectionTimerCallback, null, Timeout.Infinite, Timeout.Infinite);
+        fullResyncTimer = new(FullResyncTimerCallback, null, Timeout.Infinite, Timeout.Infinite);
     }
 
     public event EventHandler<ServerProviderStateChangedEventArgs> ServerProviderStateChanged;
@@ -37,7 +41,8 @@ public partial class LocalNetworkServerProvider : IServerFileProvider
     private ServerProviderStatus _Status = ServerProviderStatus.Disconnected;
     private ServerCallback serverCallback;
     private readonly PreferredSettings preferredServerProviderSettings;
-
+    private readonly Timer connectionTimer;
+    private readonly Timer fullResyncTimer;
 
     public class ServerProviderParams
     {
@@ -47,10 +52,22 @@ public partial class LocalNetworkServerProvider : IServerFileProvider
         public bool UseTempFilesForUpload;
     }
 
-
+    public void ConnectionTimerCallback(object state)
+    {
+        CheckProviderStatus();
+    }
+    public void FullResyncTimerCallback(object state)
+    {
+        RaiseFileChanged(new() { ChangeType = WatcherChangeTypes.All, ResyncSubDirectories = true });
+    }
     public Task<GenericResult> Connect()
     {
-        GenericResult genericResult = new GenericResult();
+        GenericResult genericResult = new();
+
+        if (serverCallback == null)
+            serverCallback = new(this);
+
+        SetProviderStatus(ServerProviderStatus.Connecting);
 
         try
         {
@@ -59,24 +76,15 @@ public partial class LocalNetworkServerProvider : IServerFileProvider
         catch (Exception) { }
 
         if (!CheckProviderStatus())
-        {
             genericResult.Status = NtStatus.STATUS_CLOUD_FILE_NETWORK_UNAVAILABLE;
-        }
-
-        if (serverCallback == null)
-        {
-            serverCallback = new ServerCallback(this);
-        }
 
         return Task.FromResult(genericResult);
     }
     public Task<GenericResult> Disconnect()
     {
-        GenericResult genericResult = new GenericResult();
+        GenericResult genericResult = new();
 
-        serverCallback.fileSystemWatcher.EnableRaisingEvents = false;
-        serverCallback?.Dispose();
-        serverCallback = null;
+        SetProviderStatus(ServerProviderStatus.Disabled);
 
         return Task.FromResult(genericResult);
     }
@@ -89,7 +97,7 @@ public partial class LocalNetworkServerProvider : IServerFileProvider
 
     public Task<DeleteFileResult> DeleteFileAsync(string RelativeFileName, bool isDirectory)
     {
-        DeleteFileResult deleteFileResult = new DeleteFileResult();
+        DeleteFileResult deleteFileResult = new();
 
         try
         {
@@ -117,7 +125,7 @@ public partial class LocalNetworkServerProvider : IServerFileProvider
         string fullPath = Path.Combine(Parameter.ServerPath, RelativeFileName);
         string fullPathDestination = Path.Combine(Parameter.ServerPath, RelativeDestination);
 
-        MoveFileResult moveFileResult = new MoveFileResult();
+        MoveFileResult moveFileResult = new();
 
         try
         {
@@ -139,7 +147,7 @@ public partial class LocalNetworkServerProvider : IServerFileProvider
     }
     public Task<GetFileInfoResult> GetFileInfo(string RelativeFileName, bool isDirectory)
     {
-        GetFileInfoResult getFileInfoResult = new GetFileInfoResult();
+        GetFileInfoResult getFileInfoResult = new();
 
         string fullPath = Path.Combine(Parameter.ServerPath, RelativeFileName);
 
@@ -171,7 +179,7 @@ public partial class LocalNetworkServerProvider : IServerFileProvider
     }
     public Task<CreateFileResult> CreateFileAsync(string RelativeFileName, bool isDirectory)
     {
-        CreateFileResult createFileResult = new CreateFileResult();
+        CreateFileResult createFileResult = new();
 
         string fullPath = Path.Combine(Parameter.ServerPath, RelativeFileName);
 
@@ -256,19 +264,53 @@ public partial class LocalNetworkServerProvider : IServerFileProvider
 
     internal bool CheckProviderStatus()
     {
-        // Emulate "Disconnected / Offline" if ServerPath not found
-        bool isOnline = Directory.Exists(Parameter.ServerPath);
+        if (Status == ServerProviderStatus.Disabled)
+            return false;
 
-        SetProviderStatus(isOnline ? ServerProviderStatus.Connected : ServerProviderStatus.Disconnected);
+        try
+        {
+            // Emulate "Disconnected / Offline" if ServerPath not found
+            bool isOnline = Directory.Exists(Parameter.ServerPath);
 
-        return isOnline;
+            SetProviderStatus(isOnline ? ServerProviderStatus.Connected : ServerProviderStatus.Disconnected);
+
+            return isOnline;
+        }
+        catch (Exception ex)
+        {
+            Styletronix.Debug.LogException(ex);
+            return false;
+        }
     }
     internal void SetProviderStatus(ServerProviderStatus status)
     {
         if (_Status != status)
         {
-            RaiseServerProviderStateChanged(new ServerProviderStateChangedEventArgs(status));
             _Status = status;
+            if (status == ServerProviderStatus.Connected)
+            {
+                // Full sync after reconnect, then every 2 hour
+                fullResyncTimer.Change(TimeSpan.FromSeconds(2), TimeSpan.FromMinutes(120));
+
+                // Check existing connection every 60 Seconds
+                connectionTimer.Change(TimeSpan.FromSeconds(60), TimeSpan.FromSeconds(60));
+                if (_Status == ServerProviderStatus.Connected)
+                    if (serverCallback != null)
+                        serverCallback.fileSystemWatcher.EnableRaisingEvents = true;
+            }
+            else
+            {
+                // Disable full resyncs if not connected
+                fullResyncTimer.Change(Timeout.Infinite, Timeout.Infinite);
+
+                if (serverCallback != null)
+                    serverCallback.fileSystemWatcher.EnableRaisingEvents = false;
+            }
+
+            if (status == ServerProviderStatus.Disabled)
+                connectionTimer.Change(Timeout.Infinite, Timeout.Infinite);
+
+            RaiseServerProviderStateChanged(new ServerProviderStateChangedEventArgs(status));
         }
     }
     internal string GetRelativePath(string fullPath)
@@ -292,7 +334,14 @@ public partial class LocalNetworkServerProvider : IServerFileProvider
     }
     protected virtual void RaiseFileChanged(FileChangedEventArgs e)
     {
-        FileChanged?.Invoke(this, e);
+        try
+        {
+            FileChanged?.Invoke(this, e);
+        }
+        catch (Exception ex)
+        {
+            Styletronix.Debug.LogException(ex);
+        }
     }
 
 
@@ -314,7 +363,7 @@ public partial class LocalNetworkServerProvider : IServerFileProvider
             }
 
             openAsyncParams = e;
-            ReadFileOpenResult openResult = new ReadFileOpenResult();
+            ReadFileOpenResult openResult = new();
 
             string fullPath = Path.Combine(provider.Parameter.ServerPath, e.RelativeFileName);
 
@@ -348,7 +397,7 @@ public partial class LocalNetworkServerProvider : IServerFileProvider
                 return new ReadFileReadResult(NtStatus.STATUS_CLOUD_FILE_NETWORK_UNAVAILABLE);
             }
 
-            ReadFileReadResult readResult = new ReadFileReadResult();
+            ReadFileReadResult readResult = new();
 
             try
             {
@@ -365,7 +414,7 @@ public partial class LocalNetworkServerProvider : IServerFileProvider
 
         public Task<ReadFileCloseResult> CloseAsync()
         {
-            ReadFileCloseResult closeResult = new ReadFileCloseResult();
+            ReadFileCloseResult closeResult = new();
 
             try
             {
@@ -473,7 +522,7 @@ public partial class LocalNetworkServerProvider : IServerFileProvider
 
             param = e;
 
-            WriteFileOpenResult openResult = new WriteFileOpenResult();
+            WriteFileOpenResult openResult = new();
 
             // PartialUpdate is done In-Place without temp file.
             if (e.mode == UploadMode.PartialUpdate) { provider.Parameter.UseTempFilesForUpload = false; }
@@ -525,7 +574,7 @@ public partial class LocalNetworkServerProvider : IServerFileProvider
 
         public async Task<WriteFileWriteResult> WriteAsync(byte[] buffer, int offsetBuffer, long offset, int count)
         {
-            WriteFileWriteResult writeResult = new WriteFileWriteResult();
+            WriteFileWriteResult writeResult = new();
 
             try
             {
@@ -542,7 +591,7 @@ public partial class LocalNetworkServerProvider : IServerFileProvider
 
         public async Task<WriteFileCloseResult> CloseAsync(bool isCompleted)
         {
-            WriteFileCloseResult closeResult = new WriteFileCloseResult();
+            WriteFileCloseResult closeResult = new();
 
             try
             {
@@ -692,7 +741,7 @@ public partial class LocalNetworkServerProvider : IServerFileProvider
             cancellationToken.Register(() => { ctx.Cancel(); });
             CancellationToken tctx = ctx.Token;
 
-            DirectoryInfo directory = new DirectoryInfo(fullPath);
+            DirectoryInfo directory = new(fullPath);
 
             if (!directory.Exists)
             {
@@ -731,7 +780,7 @@ public partial class LocalNetworkServerProvider : IServerFileProvider
         {
             return Task.Run(GetNextResult () =>
             {
-                GetNextResult getNextResult = new GetNextResult();
+                GetNextResult getNextResult = new();
 
                 try
                 {

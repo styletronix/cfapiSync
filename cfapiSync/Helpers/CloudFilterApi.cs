@@ -15,7 +15,7 @@ namespace Styletronix
     {
         public static CF_PLACEHOLDER_BASIC_INFO GetPlaceholderInfoBasic(string fullPath, bool isDirectory)
         {
-            Styletronix.Debug.WriteLine("GetPlaceholderInfoBasic: " + fullPath);
+            Styletronix.Debug.WriteLine("GetPlaceholderInfoBasic: " + fullPath, System.Diagnostics.TraceLevel.Verbose);
 
             using SafeCreateFileForCldApi h = new(fullPath, isDirectory);
 
@@ -37,7 +37,7 @@ namespace Styletronix
         }
         public static CF_PLACEHOLDER_STANDARD_INFO GetPlaceholderInfoStandard(string fullPath, bool isDirectory)
         {
-            Styletronix.Debug.WriteLine("GetPlaceholderInfoStandard: " + fullPath);
+            Styletronix.Debug.WriteLine("GetPlaceholderInfoStandard: " + fullPath, System.Diagnostics.TraceLevel.Verbose);
 
             using SafeCreateFileForCldApi h = new(fullPath, isDirectory);
 
@@ -70,12 +70,16 @@ namespace Styletronix
             {
                 ResultInfo = Marshal.PtrToStructure<CF_PLACEHOLDER_STANDARD_INFO>(bufferPointerHandler);
             }
+            else
+            {
+                Styletronix.Debug.WriteLine("GetPlaceholderInfoBasic Failed: " + ((IntPtr)FileHandle).ToString(), System.Diagnostics.TraceLevel.Warning);
+            }
 
             return ResultInfo;
         }
         public static CF_PLACEHOLDER_BASIC_INFO GetPlaceholderInfoBasic(HFILE FileHandle)
         {
-            Styletronix.Debug.WriteLine("GetPlaceholderInfoBasic: " + ((IntPtr)FileHandle).ToString());
+            Styletronix.Debug.WriteLine("GetPlaceholderInfoBasic: " + ((IntPtr)FileHandle).ToString(), System.Diagnostics.TraceLevel.Verbose);
 
             int InfoBufferLength = 1024;
             CF_PLACEHOLDER_BASIC_INFO ResultInfo = default;
@@ -91,7 +95,7 @@ namespace Styletronix
                 }
                 else
                 {
-
+                    Styletronix.Debug.WriteLine("GetPlaceholderInfoBasic Failed: " + ((IntPtr)FileHandle).ToString(), System.Diagnostics.TraceLevel.Warning);
                 }
             }
 
@@ -189,7 +193,6 @@ namespace Styletronix
                 {
                     return instance._handle;
                 }
-
                 public static implicit operator HFILE(SafeCreateFileForCldApi instance)
                 {
                     return instance._handle;
@@ -197,9 +200,7 @@ namespace Styletronix
 
                 private readonly SafeFileHandle _handle;
 
-
                 private bool disposedValue;
-
                 protected virtual void Dispose(bool disposing)
                 {
                     if (!disposedValue)
@@ -211,10 +212,8 @@ namespace Styletronix
                         disposedValue = true;
                     }
                 }
-
                 public void Dispose()
                 {
-                    // Ändern Sie diesen Code nicht. Fügen Sie Bereinigungscode in der Methode "Dispose(bool disposing)" ein.
                     Dispose(disposing: true);
                     GC.SuppressFinalize(this);
                 }
@@ -393,6 +392,7 @@ namespace Styletronix
                 }
             }
         }
+
         public class AutoDisposeList<T> : List<T>, IDisposable where T : IDisposable
         {
             public void Dispose()
@@ -404,140 +404,89 @@ namespace Styletronix
             }
         }
 
-        public class CallbackSuspensionHelper : IDisposable
-        {
-            private ConcurrentDictionary<string, int> suspendFileCallbackList = new();
-            private bool disposedValue;
-
-            public class SuspendedValue : IDisposable
-            {
-                private bool disposedValue;
-                private readonly string value;
-                private readonly ConcurrentDictionary<string, int> suspendFileCallbackList;
-
-                public SuspendedValue(string value, ConcurrentDictionary<string, int> suspendFileCallbackList)
-                {
-                    this.value = value;
-                    this.suspendFileCallbackList = suspendFileCallbackList;
-                }
-
-                protected virtual void Dispose(bool disposing)
-                {
-                    if (!disposedValue)
-                    {
-                        if (disposing)
-                        {
-                            int? ret = suspendFileCallbackList?.AddOrUpdate(value, 1, (k, v) => v--);
-
-                            // TODO: Remove item from dictionary if <= 0
-                            // Currently unknown how to do it thread safe
-
-                            //if (ret <= 0)
-                            //{
-                            //   if ( suspendFileCallbackList.TryRemove(value, out ret))
-                            //    {
-                            //        if (ret >0)
-                            //        {
-                            //            suspendFileCallbackList.AddOrUpdate(value, ret, (k, v) => v++);
-                            //        }
-                            //    }
-                            //}
-                        }
-
-                        disposedValue = true;
-                    }
-                }
-                public void Dispose()
-                {
-                    // Ändern Sie diesen Code nicht. Fügen Sie Bereinigungscode in der Methode "Dispose(bool disposing)" ein.
-                    Dispose(disposing: true);
-                    GC.SuppressFinalize(this);
-                }
-            }
-
-            public bool IsSuspended(string value)
-            {
-                if (!suspendFileCallbackList.TryGetValue(value, out int result))
-                {
-                    return false;
-                }
-
-                return result > 0;
-            }
-            public SuspendedValue SetSuspension(string value)
-            {
-                return new SuspendedValue(value, suspendFileCallbackList);
-            }
-
-            protected virtual void Dispose(bool disposing)
-            {
-                if (!disposedValue)
-                {
-                    if (disposing)
-                    {
-                        suspendFileCallbackList?.Clear();
-                        suspendFileCallbackList = null;
-                    }
-
-                    disposedValue = true;
-                }
-            }
-            public void Dispose()
-            {
-                // Ändern Sie diesen Code nicht. Fügen Sie Bereinigungscode in der Methode "Dispose(bool disposing)" ein.
-                Dispose(disposing: true);
-                GC.SuppressFinalize(this);
-            }
-        }
-        //public class SuspensionHelper
+        //public class CallbackSuspensionHelper : IDisposable
         //{
-        //    private long lockCounter;
-        //    private readonly object lockObject = new();
-        //    private System.Threading.CancellationTokenSource cancellationTokenSource = new();
+        //    private ConcurrentDictionary<string, int> suspendFileCallbackList = new();
+        //    private bool disposedValue;
 
-        //    public void BeginSuspension()
+        //    public class SuspendedValue : IDisposable
         //    {
-        //        Debug.WriteLine("BeginSuspension", System.Diagnostics.TraceLevel.Verbose);
-        //        lock (lockObject)
+        //        private bool disposedValue;
+        //        private readonly string value;
+        //        private readonly ConcurrentDictionary<string, int> suspendFileCallbackList;
+
+        //        public SuspendedValue(string value, ConcurrentDictionary<string, int> suspendFileCallbackList)
         //        {
-        //            lockCounter += 1;
-        //            if (cancellationTokenSource.IsCancellationRequested) cancellationTokenSource = new();
+        //            this.value = value;
+        //            this.suspendFileCallbackList = suspendFileCallbackList;
+        //        }
+
+        //        protected virtual void Dispose(bool disposing)
+        //        {
+        //            if (!disposedValue)
+        //            {
+        //                if (disposing)
+        //                {
+        //                    int? ret = suspendFileCallbackList?.AddOrUpdate(value, 1, (k, v) => v--);
+
+        //                    // TODO: Remove item from dictionary if <= 0
+        //                    // Currently unknown how to do it thread safe
+
+        //                    //if (ret <= 0)
+        //                    //{
+        //                    //   if ( suspendFileCallbackList.TryRemove(value, out ret))
+        //                    //    {
+        //                    //        if (ret >0)
+        //                    //        {
+        //                    //            suspendFileCallbackList.AddOrUpdate(value, ret, (k, v) => v++);
+        //                    //        }
+        //                    //    }
+        //                    //}
+        //                }
+
+        //                disposedValue = true;
+        //            }
+        //        }
+        //        public void Dispose()
+        //        {
+        //            // Ändern Sie diesen Code nicht. Fügen Sie Bereinigungscode in der Methode "Dispose(bool disposing)" ein.
+        //            Dispose(disposing: true);
+        //            GC.SuppressFinalize(this);
         //        }
         //    }
-        //    public void EndSuspension()
+
+        //    public bool IsSuspended(string value)
         //    {
-        //        Debug.WriteLine("EndSuspension", System.Diagnostics.TraceLevel.Verbose);
-        //        lock (lockObject)
+        //        if (!suspendFileCallbackList.TryGetValue(value, out int result))
         //        {
-        //            lockCounter -= 1;
-        //            if (lockCounter < 0) lockCounter = 0;
-        //            Debug.WriteLine("Suspension release", System.Diagnostics.TraceLevel.Verbose);
-        //            if (lockCounter == 0) cancellationTokenSource.Cancel();
+        //            return false;
         //        }
+
+        //        return result > 0;
+        //    }
+        //    public SuspendedValue SetSuspension(string value)
+        //    {
+        //        return new SuspendedValue(value, suspendFileCallbackList);
         //    }
 
-        //    public bool IsSuspended()
+        //    protected virtual void Dispose(bool disposing)
         //    {
-        //        lock (lockObject)
+        //        if (!disposedValue)
         //        {
-        //            return lockCounter > 0;
+        //            if (disposing)
+        //            {
+        //                suspendFileCallbackList?.Clear();
+        //                suspendFileCallbackList = null;
+        //            }
+
+        //            disposedValue = true;
         //        }
         //    }
-
-        //    public async Task WaitWhileSuspendedAsync()
+        //    public void Dispose()
         //    {
-        //        if (!IsSuspended()) await Task.CompletedTask;
-
-        //        Debug.WriteLine("WaitWhileSuspendedAsync", System.Diagnostics.TraceLevel.Verbose);
-        //        try
-        //        {
-        //            await Task.Delay(TimeSpan.FromMinutes(4), cancellationTokenSource.Token).ConfigureAwait(false);
-        //        }
-        //        catch (Exception)
-        //        {
-
-        //        }
-
+        //        // Ändern Sie diesen Code nicht. Fügen Sie Bereinigungscode in der Methode "Dispose(bool disposing)" ein.
+        //        Dispose(disposing: true);
+        //        GC.SuppressFinalize(this);
         //    }
         //}
 
