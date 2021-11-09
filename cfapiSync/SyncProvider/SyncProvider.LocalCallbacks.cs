@@ -36,7 +36,6 @@ public partial class SyncProvider
 
         if (!cancelFetch)
         {
-            // Get Process info to
             CF_PROCESS_INFO processInfo = Marshal.PtrToStructure<CF_PROCESS_INFO>(CallbackInfo.ProcessInfo);
             foreach (string process in ExcludedProcessesForFetchPlaceholders)
             {
@@ -61,7 +60,6 @@ public partial class SyncProvider
             };
             CF_OPERATION_PARAMETERS opParams = CF_OPERATION_PARAMETERS.Create(TpParam);
             HRESULT executeResult = CfExecute(opInfo, ref opParams);
-
 
             Styletronix.Debug.LogResponse(executeResult);
             return;
@@ -161,15 +159,23 @@ public partial class SyncProvider
     }
     public void NOTIFY_FILE_OPEN_COMPLETION(in CF_CALLBACK_INFO CallbackInfo, in CF_CALLBACK_PARAMETERS CallbackParameters)
     {
-        //Styletronix.Debug.WriteLine("NOTIFY_FILE_OPEN_COMPLETION: " + CallbackInfo.NormalizedPath);
+        Styletronix.Debug.WriteLine("NOTIFY_FILE_OPEN_COMPLETION: " + CallbackInfo.NormalizedPath);
+        LocalChangedDataQueue.LockItem(GetLocalFullPath(CallbackInfo));
     }
     public void NOTIFY_FILE_CLOSE_COMPLETION(in CF_CALLBACK_INFO CallbackInfo, in CF_CALLBACK_PARAMETERS CallbackParameters)
     {
         Styletronix.Debug.WriteLine("NOTIFY_FILE_CLOSE_COMPLETION: " + CallbackInfo.NormalizedPath);
+        // on file close seems to be redundant with FileSystemWatcher, but due to internal locks and filtering, it does not affect performance.
+        // Maybe filesystemwatcher is not required ??
+        // What happens if the file is a streamed movie file?? Does it permanently get triggered while playback??
+        LocalChangedDataQueue.UnlockItem(GetLocalFullPath(CallbackInfo));
+
+        AddFileToLocalChangeQueue(GetLocalFullPath(CallbackInfo), false);
     }
     public void NOTIFY_DELETE(in CF_CALLBACK_INFO CallbackInfo, in CF_CALLBACK_PARAMETERS CallbackParameters)
     {
-        if (MaintenanceInProgress) return;
+        if (MaintenanceInProgress)
+            return;
 
         DeleteQueue.Post(new DeleteAction()
         {
@@ -185,9 +191,7 @@ public partial class SyncProvider
     public void NOTIFY_RENAME(in CF_CALLBACK_INFO CallbackInfo, in CF_CALLBACK_PARAMETERS CallbackParameters)
     {
         if (MaintenanceInProgress)
-        {
             return;
-        }
 
         Styletronix.Debug.WriteLine("NOTIFY_RENAME: " + CallbackInfo.NormalizedPath + " -> " + CallbackParameters.Rename.TargetPath, System.Diagnostics.TraceLevel.Info);
 
@@ -201,6 +205,8 @@ public partial class SyncProvider
     {
         Styletronix.Debug.WriteLine("NOTIFY_RENAME_COMPLETION: " + CallbackParameters.RenameCompletion.SourcePath + " -> " + CallbackInfo.NormalizedPath, System.Diagnostics.TraceLevel.Verbose);
     }
+
+
     private async void FileSystemWatcher_OnError(object sender, ErrorEventArgs e)
     {
         Styletronix.Debug.WriteLine("FileSystemWatcher Error: " + e.GetException().Message, System.Diagnostics.TraceLevel.Warning);
@@ -210,28 +216,30 @@ public partial class SyncProvider
     }
     private void FileSystemWatcher_OnChanged(object sender, FileSystemEventArgs e)
     {
-        if (IsExcludedFile(e.FullPath))
-            return;
-
-        if (SyncContext.ServerProvider.PreferredServerProviderSettings.PreferFullDirSync)
-        {
-            if(SyncContext.ServerProvider.Status == ServerProviderStatus.Connected)
-                LocalSyncTimer.Change(TimeSpan.FromSeconds(5), LocalSyncTimerInterval);
-        }
-        else
-        {
-            AddFileToChangeQueue(e.FullPath, false);
-        }
+        //if (SyncContext.ServerProvider.PreferredServerProviderSettings.PreferFullDirSync)
+        //{
+        //    if(SyncContext.ServerProvider.Status == ServerProviderStatus.Connected)
+        //        LocalSyncTimer.Change(TimeSpan.FromSeconds(5), LocalSyncTimerInterval);
+        //}
+        //else
+        //{
+        AddFileToLocalChangeQueue(e.FullPath, false);
+        //}
     }
 
 
-    private void AddFileToChangeQueue(string fullPath, bool ignoreLock)
+    private void AddFileToLocalChangeQueue(string fullPath, bool ignoreLock)
     {
         if (MaintenanceInProgress)
             return;
 
-        ChangedDataQueue.TryAdd(fullPath, ignoreLock);
+        if (IsExcludedFile(fullPath))
+            return;
+
+        LocalChangedDataQueue.TryAdd(fullPath, ignoreLock);
     }
+
+
 
     public async void FETCH_PLACEHOLDERS_Internal(string relativePath, CF_OPERATION_INFO opInfo, string pattern, CancellationToken cancellationToken)
     {
@@ -250,103 +258,96 @@ public partial class SyncProvider
         // - Compare full list after last CFExecute.
         // - Use pattern
 
-        try
+
+        using SafePlaceHolderList infos = new();
+        NtStatus completionStatus = NtStatus.STATUS_SUCCESS;
+
+        // Get Filelist from Server
+        GenericResult<List<Placeholder>> getServerFileListResult = await GetServerFileListAsync(relativePath, cancellationToken);
+        if (!getServerFileListResult.Succeeded)
         {
-            using SafePlaceHolderList infos = new();
-            NtStatus completionStatus = NtStatus.STATUS_SUCCESS;
-
-            // Get Filelist from Server
-            GenericResult<List<Placeholder>> getServerFileListResult = await GetServerFileListAsync(relativePath, cancellationToken);
-            if (!getServerFileListResult.Succeeded)
-            {
-                completionStatus = getServerFileListResult.Status;
-            }
-            else
-            {
-                // Create CreatePlaceholderInfo for each Cloud File
-                foreach (Placeholder placeholder in getServerFileListResult.Data)
-                {
-                    infos.Add(Styletronix.CloudFilterApi.CreatePlaceholderInfo(placeholder, Guid.NewGuid().ToString()));
-                    if (cancellationToken.IsCancellationRequested)
-                    {
-                        return;
-                    }
-                };
-            }
-
-
-            // Directorys which do not exist on Server should not throw any exception.
-            if (completionStatus == NtStatus.STATUS_NOT_A_CLOUD_FILE)
-            {
-
-                completionStatus = NtStatus.STATUS_SUCCESS;
-            }
-
-
-            using DisposableObject<string> lockItem = ChangedDataQueue.LockItem(fullPath);
-
-
-
-            uint total = (uint)infos.Count;
-            CF_OPERATION_PARAMETERS.TRANSFERPLACEHOLDERS TpParam = new()
-            {
-                PlaceholderArray = infos,
-                Flags = CF_OPERATION_TRANSFER_PLACEHOLDERS_FLAGS.CF_OPERATION_TRANSFER_PLACEHOLDERS_FLAG_DISABLE_ON_DEMAND_POPULATION,
-                PlaceholderCount = total,
-                PlaceholderTotalCount = total,
-                CompletionStatus = new NTStatus((uint)completionStatus)
-            };
-            CF_OPERATION_PARAMETERS opParams = CF_OPERATION_PARAMETERS.Create(TpParam);
-            HRESULT executeResult = CfExecute(opInfo, ref opParams);
-            Styletronix.Debug.LogResponse(executeResult);
-
-            FetchPlaceholdersCancellationTokens.TryRemove(relativePath, out CancellationTokenSource _);
-
-            if (completionStatus != NtStatus.STATUS_SUCCESS || !executeResult.Succeeded)
-            {
-                return;
-            }
-
-
-            // Validate local Placeholders. CfExecute only adds missing entries, but does not check existing data.
-
-            // Get Local FileList
-            List<Placeholder> localPlaceholders = GetLocalFileList(SyncContext.LocalRootFolder + "\\" + relativePath, cancellationToken);
-
-            foreach (Placeholder remotePlaceholder in getServerFileListResult.Data)
-            {
-                Placeholder localPlaceholder = (from a in localPlaceholders where string.Equals(a.RelativeFileName, remotePlaceholder.RelativeFileName, StringComparison.CurrentCultureIgnoreCase) select a).FirstOrDefault();
-
-                if (remotePlaceholder.FileAttributes.HasFlag(FileAttributes.Directory) == false && remotePlaceholder.ETag != localPlaceholder?.ETag)
-                {
-                    AddFileToChangeQueue(GetLocalFullPath(remotePlaceholder.RelativeFileName), true);
-                }
-            }
-
-            foreach (Placeholder item in localPlaceholders)
-            {
-                if (!(from a in getServerFileListResult.Data where string.Equals(a.RelativeFileName, item.RelativeFileName, StringComparison.CurrentCultureIgnoreCase) select a).Any())
-                {
-                    AddFileToChangeQueue(GetLocalFullPath(item.RelativeFileName), true);
-                }
-            }
-
-            //SetInSyncState(SyncContext.LocalRootFolder + "\\" + relativePath, CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_IN_SYNC, true);
+            completionStatus = getServerFileListResult.Status;
         }
-        finally
+        else
         {
-            //suspendLocalFileChangeHandling.EndSuspension();
+            // Create CreatePlaceholderInfo for each Cloud File
+            foreach (Placeholder placeholder in getServerFileListResult.Data)
+            {
+                infos.Add(Styletronix.CloudFilterApi.CreatePlaceholderInfo(placeholder, Guid.NewGuid().ToString()));
+                if (cancellationToken.IsCancellationRequested)
+                    return;
+            };
+        }
+
+
+        // Directorys which do not exist on Server should not throw any exception.
+        if (completionStatus == NtStatus.STATUS_NOT_A_CLOUD_FILE)
+        {
+
+            completionStatus = NtStatus.STATUS_SUCCESS;
+        }
+
+
+        using DisposableObject<string> lockItem = LocalChangedDataQueue.LockItemDisposable(fullPath);
+
+
+
+        uint total = (uint)infos.Count;
+        CF_OPERATION_PARAMETERS.TRANSFERPLACEHOLDERS TpParam = new()
+        {
+            PlaceholderArray = infos,
+            Flags = CF_OPERATION_TRANSFER_PLACEHOLDERS_FLAGS.CF_OPERATION_TRANSFER_PLACEHOLDERS_FLAG_DISABLE_ON_DEMAND_POPULATION,
+            PlaceholderCount = total,
+            PlaceholderTotalCount = total,
+            CompletionStatus = new NTStatus((uint)completionStatus)
+        };
+        CF_OPERATION_PARAMETERS opParams = CF_OPERATION_PARAMETERS.Create(TpParam);
+        HRESULT executeResult = CfExecute(opInfo, ref opParams);
+        Styletronix.Debug.LogResponse(executeResult);
+
+        FetchPlaceholdersCancellationTokens.TryRemove(relativePath, out CancellationTokenSource _);
+
+        if (completionStatus != NtStatus.STATUS_SUCCESS || !executeResult.Succeeded)
+            return;
+
+        // Validate local Placeholders. CfExecute only adds missing entries, but does not check existing data.
+
+        // Get Local FileList
+        List<Placeholder> localPlaceholders = GetLocalFileList(SyncContext.LocalRootFolder + "\\" + relativePath, cancellationToken);
+
+        foreach (Placeholder remotePlaceholder in getServerFileListResult.Data)
+        {
+            Placeholder localPlaceholder = (from a in localPlaceholders where string.Equals(a.RelativeFileName, remotePlaceholder.RelativeFileName, StringComparison.CurrentCultureIgnoreCase) select a).FirstOrDefault();
+
+            if (remotePlaceholder.FileAttributes.HasFlag(FileAttributes.Directory) == false && remotePlaceholder.ETag != localPlaceholder?.ETag)
+            {
+                AddFileToLocalChangeQueue(GetLocalFullPath(remotePlaceholder.RelativeFileName), true);
+            }
+        }
+
+        foreach (Placeholder item in localPlaceholders)
+        {
+            if (!(from a in getServerFileListResult.Data where string.Equals(a.RelativeFileName, item.RelativeFileName, StringComparison.CurrentCultureIgnoreCase) select a).Any())
+            {
+                AddFileToLocalChangeQueue(GetLocalFullPath(item.RelativeFileName), true);
+            }
         }
     }
-
-
     public async void NOTIFY_RENAME_Internal(string RelativeFileName, string RelativeFileNameDestination, bool isDirectory, CF_OPERATION_INFO opInfo)
     {
-        if (MaintenanceInProgress) return;
+        if (MaintenanceInProgress)
+            return;
 
-        using var lockItem = this.ChangedDataQueue.LockItem(GetLocalFullPath(RelativeFileName));
+        using var lockItem = this.LocalChangedDataQueue.LockItemDisposable(GetLocalFullPath(RelativeFileName));
 
         NTStatus status;
+
+        if (!IsExcludedFile(RelativeFileName) && IsExcludedFile(RelativeFileNameDestination))
+            AddFileToLocalChangeQueue(GetLocalFullPath(RelativeFileName), true);
+
+        if (IsExcludedFile(RelativeFileName) && !IsExcludedFile(RelativeFileNameDestination))
+            AddFileToLocalChangeQueue(GetLocalFullPath(RelativeFileNameDestination), true);
+
 
         if (!IsExcludedFile(RelativeFileName) && !IsExcludedFile(RelativeFileNameDestination))
         {
@@ -376,7 +377,8 @@ public partial class SyncProvider
     }
     private async Task NOTIFY_DELETE_Action(DeleteAction dat)
     {
-        if (MaintenanceInProgress) return;
+        if (MaintenanceInProgress)
+            return;
 
         NTStatus status;
 
@@ -392,7 +394,7 @@ public partial class SyncProvider
         }
 
         string fullPath = SyncContext.LocalRootFolder + "\\" + dat.RelativePath;
-        using var lockFile = this.ChangedDataQueue.LockItem(fullPath);
+        using var lockFile = this.LocalChangedDataQueue.LockItemDisposable(fullPath);
 
         if (IsExcludedFile(dat.RelativePath))
         {
@@ -663,12 +665,7 @@ public partial class SyncProvider
         }
     }
 
-    private class DeleteAction
-    {
-        public CF_OPERATION_INFO OpInfo;
-        public string RelativePath;
-        public bool IsDirectory;
-    }
+
 
     private class FileRangeManager : IDisposable
     {
@@ -905,9 +902,18 @@ public partial class SyncProvider
         {
             if (itemsToProcess.Any())
             {
-                data = itemsToProcess[0];
-                itemsToProcess.RemoveAt(0);
-                return true;
+                foreach (var item in itemsToProcess)
+                {
+                    if (!IsItemLocked(item))
+                    {
+                        data = item;
+                        itemsToProcess.Remove(item);
+                        return true;
+                    }
+                }
+
+                data = default;
+                return false;
             }
             else
             {
@@ -920,14 +926,25 @@ public partial class SyncProvider
         /// </summary>
         /// <param name="item"></param>
         /// <returns>IDisposable Item which holds the Lock for the item and releases the lock after disposable</returns>
-        public DisposableObject<t> LockItem(t item)
+        public DisposableObject<t> LockItemDisposable(t item)
         {
             LockTable.AddOrUpdate(item, 1, (k, v) => v + 1);
 
             return new DisposableObject<t>(data =>
             {
-                LockTable.AddOrUpdate(item, 0, (k, v) => v - 1);
+                if (LockTable.AddOrUpdate(item, 0, (k, v) => v - 1) <= 0)
+                    AddTimer.Change(WaitForAddingCompleted, Timeout.Infinite);
+
             }, item);
+        }
+        public void LockItem(t item)
+        {
+            LockTable.AddOrUpdate(item, 1, (k, v) => v + 1);
+        }
+        public void UnlockItem(t item)
+        {
+            if (LockTable.AddOrUpdate(item, 0, (k, v) => v - 1) <= 0)
+                AddTimer.Change(WaitForAddingCompleted, Timeout.Infinite);
         }
         public bool IsItemLocked(t item)
         {
@@ -935,8 +952,11 @@ public partial class SyncProvider
 
             return value != 0;
         }
-
-
+        public void Reset()
+        {
+            itemsToProcess.Clear();
+            LockTable.Clear();
+        }
         public void Add(t data, bool ignoreLock)
         {
             TryAdd(data, ignoreLock);

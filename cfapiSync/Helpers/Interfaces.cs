@@ -229,8 +229,8 @@ namespace Styletronix.CloudSyncProvider
     }
     public enum SyncMode
     {
-        Local,
-        Full
+        Local = 0,
+        Full = 1
     }
 
     //The Dynamic Placeholder provides a way to supply a already downloaded remote placeholder or to get the remote placeholder on demand instead of always downloading remote date even if it may not be required.
@@ -541,6 +541,7 @@ namespace Styletronix.CloudSyncProvider
         public DateTime NextTry;
         public Exception LastException;
         public int RetryCount;
+        public SyncMode SyncMode;
     }
 
     public class FileProgressEventArgs : EventArgs
@@ -650,7 +651,12 @@ namespace Styletronix.CloudSyncProvider
         public CF_TRANSFER_KEY TransferKey;
         public byte PriorityHint;
     }
-
+    public class DeleteAction
+    {
+        public CF_OPERATION_INFO OpInfo;
+        public string RelativePath;
+        public bool IsDirectory;
+    }
     public class SyncProviderStatusEventArgs : EventArgs
     {
         public long QueueLength;

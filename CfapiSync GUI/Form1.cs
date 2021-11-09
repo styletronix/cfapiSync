@@ -8,17 +8,11 @@ namespace CfapiSync_GUI
     public partial class Form1 : Form
     {
         private SyncProvider SyncProvider;
-        private readonly System.Threading.Timer refreshUITimer;
+        private System.Threading.Timer refreshUITimer;
 
         public Form1()
         {
             InitializeComponent();
-           
-            textBox_serverPath.Text = SyncProviderUtils.GetUserSetting("ServerPath", "Provider\\1", @"\\privatserver01.ama.local\Dokumente$").ToString();
-            textBox_localPath.Text = SyncProviderUtils.GetUserSetting("LocalPath", "Provider\\1", Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) + @"\VirtualTest").ToString();
-            textBox_Caption.Text = SyncProviderUtils.GetUserSetting("Caption", "Provider\\1", @"CfapiSync").ToString();
-
-            refreshUITimer = new(RefreshUITimerCallback, null, 1000, 500);
         }
 
         private void RefreshUITimerCallback(object objectState)
@@ -30,6 +24,7 @@ namespace CfapiSync_GUI
                           {
                               label_QueueCount.Text = QueueStatus;
                               progressBar1.Value = Progress;
+
 
                               textBox1.SuspendLayout();
                               while (MessageQueue.TryDequeue(out string message))
@@ -49,6 +44,56 @@ namespace CfapiSync_GUI
         private void Form1_Load(object sender, EventArgs e)
         {
             Styletronix.Debug.LogEvent += WriteEventToLog;
+
+            var args = Environment.GetCommandLineArgs();
+            int i = 1;
+            bool anyCMD = false;
+            bool hasLocalPath = false;
+
+            while (i < args.Length - 1)
+            {
+                var command = args[i];
+                var param = args[i + 1];
+
+                switch (command.ToLower())
+                {
+                    case "/serverpath":
+                        textBox_serverPath.Text = param;
+                        anyCMD = true;
+                        break;
+                    case "/localpath":
+                        textBox_localPath.Text = param;
+                        anyCMD = true;
+                        hasLocalPath = true;
+                        break;
+                    case "/caption":
+                        textBox_Caption.Text = param;
+                        anyCMD = true;
+                        break;
+                }
+                i += 2;
+            }
+
+            refreshUITimer = new(RefreshUITimerCallback, null, 1000, 500);
+
+            if (!anyCMD)
+            {
+                textBox_serverPath.Text = SyncProviderUtils.GetUserSetting("ServerPath", "Provider\\1", @"\\privatserver01.ama.local\Dokumente$").ToString();
+                textBox_localPath.Text = SyncProviderUtils.GetUserSetting("LocalPath", "Provider\\1", Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) + @"\VirtualTest").ToString();
+                textBox_Caption.Text = SyncProviderUtils.GetUserSetting("Caption", "Provider\\1", @"CfapiSync").ToString();
+            }
+            else
+            {
+                if (!hasLocalPath)
+                {
+                    textBox_localPath.Text = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) + @"\" + textBox_Caption.Text;
+                }
+
+                button1.Enabled = false;
+
+                InitProvider();
+                SyncProvider.Start();
+            }
         }
 
         private void WriteEventToLog(object sender, Debug.LogEventArgs e)

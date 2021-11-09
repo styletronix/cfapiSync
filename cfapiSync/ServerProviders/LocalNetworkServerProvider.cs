@@ -125,6 +125,9 @@ public partial class LocalNetworkServerProvider : IServerFileProvider
         string fullPath = Path.Combine(Parameter.ServerPath, RelativeFileName);
         string fullPathDestination = Path.Combine(Parameter.ServerPath, RelativeDestination);
 
+        if (!Directory.Exists(Path.GetDirectoryName(fullPathDestination)))
+            Directory.CreateDirectory(Path.GetDirectoryName(fullPathDestination));
+
         MoveFileResult moveFileResult = new();
 
         try

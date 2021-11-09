@@ -33,49 +33,51 @@ public partial class SyncProvider : IDisposable
             {
                 string localFullPath = GetLocalFullPath(e.Placeholder.RelativeFileName);
 
-                switch (e.ChangeType)
-                {
-                    case WatcherChangeTypes.Deleted:
-                        if (e.Placeholder.FileAttributes.HasFlag(FileAttributes.Directory))
-                        {
-                            await SyncDataAsync(SyncMode.Full, e.Placeholder.RelativeFileName);
-                        }
-                        else
-                        {
-                            AddFileToChangeQueue(localFullPath, false);
-                        }
-                        break;
+                AddFileToRemoteChangeQueue(localFullPath, false);
 
-                    case WatcherChangeTypes.Renamed:
-                        string localOldFullPath = GetLocalFullPath(e.OldRelativePath);
+                //switch (e.ChangeType)
+                //{
+                //    case WatcherChangeTypes.Deleted:
+                //        if (e.Placeholder.FileAttributes.HasFlag(FileAttributes.Directory))
+                //        {
+                //            await SyncDataAsync(SyncMode.Full, e.Placeholder.RelativeFileName);
+                //        }
+                //        else
+                //        {
+                //            AddFileToLocalChangeQueue(localFullPath, false);
+                //        }
+                //        break;
 
-                        if (Directory.Exists(localOldFullPath))
-                        {
-                            Directory.Move(localOldFullPath, localFullPath);
-                        }
-                        else if (File.Exists(localOldFullPath))
-                        {
-                            File.Move(localOldFullPath, localFullPath);
-                        }
-                        else
-                        {
-                            AddFileToChangeQueue(localFullPath, false);
-                        }
-                        break;
+                //    case WatcherChangeTypes.Renamed:
+                //        string localOldFullPath = GetLocalFullPath(e.OldRelativePath);
 
-                    case WatcherChangeTypes.Created:
-                        AddFileToChangeQueue(localFullPath, false);
-                        break;
+                //        if (Directory.Exists(localOldFullPath))
+                //        {
+                //            Directory.Move(localOldFullPath, localFullPath);
+                //        }
+                //        else if (File.Exists(localOldFullPath))
+                //        {
+                //            File.Move(localOldFullPath, localFullPath);
+                //        }
+                //        else
+                //        {
+                //            AddFileToLocalChangeQueue(localFullPath, false);
+                //        }
+                //        break;
 
-                    case WatcherChangeTypes.Changed:
-                        AddFileToChangeQueue(localFullPath, false);
-                        break;
+                //    case WatcherChangeTypes.Created:
+                //        AddFileToLocalChangeQueue(localFullPath, false);
+                //        break;
 
-                    default:
-                        AddFileToChangeQueue(GetLocalFullPath(e.Placeholder.RelativeFileName), false);
-                        break;
+                //    case WatcherChangeTypes.Changed:
+                //        AddFileToLocalChangeQueue(localFullPath, false);
+                //        break;
 
-                }
+                //    default:
+                //        AddFileToLocalChangeQueue(GetLocalFullPath(e.Placeholder.RelativeFileName), false);
+                //        break;
+
+                //}
             }
         }
         catch (Exception ex)
@@ -98,5 +100,17 @@ public partial class SyncProvider : IDisposable
         }
 
         Styletronix.Debug.WriteLine("ServerProviderStateChanged: " + e.Status.ToString(), System.Diagnostics.TraceLevel.Verbose);
+    }
+
+
+    private void AddFileToRemoteChangeQueue(string fullPath, bool ignoreLock)
+    {
+        if (MaintenanceInProgress)
+            return;
+
+        if (IsExcludedFile(fullPath))
+            return;
+
+        RemoteChangedDataQueue.TryAdd(fullPath, ignoreLock);
     }
 }

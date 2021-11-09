@@ -26,8 +26,8 @@ public partial class SyncProvider : IDisposable
     private readonly int optionalChunkSizeFaktor = 2; // If optional Offset is supplied, Prefetch x times of chunkSize
     private readonly int optionalChunkSize; // optionalChunkSize = chunkSize * optionalChunkSizeFaktor
     private readonly int stackSize = 1024 * 512; // Buffer size for P/Invoke Call to CFExecute max 1 MB
-    private readonly TimeSpan FailedQueueTimerInterval = TimeSpan.FromSeconds(10); // Retry interval for failed files.
-    private readonly TimeSpan LocalSyncTimerInterval = TimeSpan.FromMinutes(5); // Interval for local file change checks if FileWatcher missed changes.
+    private readonly TimeSpan FailedQueueTimerInterval = TimeSpan.FromSeconds(30); // Retry interval for failed files.
+    private readonly TimeSpan LocalSyncTimerInterval = TimeSpan.FromMinutes(30); // Interval for local file change checks if FileWatcher missed changes.
     private readonly string[] fileExclusions = new string[] { @".*\\Thumbs\.db", @".*\\Desktop\.ini", @".*\.tmp", @".*Recycle\.Bin.*", @".*\~.*" }; // Files which are not synced. (RegEx)
 
     private bool disposedValue;
@@ -338,6 +338,13 @@ public partial class SyncProvider : IDisposable
                 break;
         }
 
+        if (string.IsNullOrWhiteSpace(relativePath))
+        {
+            LocalChangedDataQueue.Reset();
+            if (syncMode == SyncMode.Full)
+                RemoteChangedDataQueue.Reset();
+        }
+
         try
         {
             await Task.Factory.StartNew(async () =>
@@ -496,7 +503,7 @@ public partial class SyncProvider : IDisposable
                         }
                         catch (Exception)
                         {
-                            AddFileToChangeQueue(fullFilePath, true);
+                            AddFileToLocalChangeQueue(fullFilePath, true);
                         }
 
                         if (await SyncDataAsyncRecursive(fullFilePath, ctx, syncMode))
@@ -553,7 +560,7 @@ public partial class SyncProvider : IDisposable
                     //}
                 }
 
-                if (!localPlaceholder.PlaceholderState.HasFlag(CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_IN_SYNC) || !localPlaceholder.PlaceholderState.HasFlag(CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_PARTIAL) || localPlaceholder.PlaceholderInfoStandard.OnDiskDataSize > 0 )
+                if (!localPlaceholder.PlaceholderState.HasFlag(CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_IN_SYNC) || !localPlaceholder.PlaceholderState.HasFlag(CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_PARTIAL) || localPlaceholder.PlaceholderInfoStandard.OnDiskDataSize > 0)
                     anyFileHydrated = true;
 
             }
@@ -777,8 +784,14 @@ public partial class SyncProvider : IDisposable
 
 
     public readonly ConcurrentDictionary<string, FailedData> FailedDataQueue = new();
-    private readonly MultiQueue<string> ChangedDataQueue = new();
-    private Task ChangedDataQueueTask;
+
+    // TODO: Restructure of Queues to have one queue containing path, sync mode and optional remote placeholder supplied from ServerProvider during change notification.
+    // TODO: Add abiltity to reduce queue to folder path if many files inside folder changed.
+    private readonly MultiQueue<string> LocalChangedDataQueue = new();
+    private readonly MultiQueue<string> RemoteChangedDataQueue = new();
+
+    private Task LocalChangedDataQueueTask;
+    private Task RemoteChangedDataQueueTask;
 
     private void InitWatcher()
     {
@@ -788,9 +801,11 @@ public partial class SyncProvider : IDisposable
 
         ChangedDataCancellationTokenSource = new CancellationTokenSource();
         GlobalShutDownToken.Register(() => ChangedDataCancellationTokenSource.Cancel());
-        ChangedDataCancellationTokenSource.Token.Register(() => ChangedDataQueue.Complete());
+        ChangedDataCancellationTokenSource.Token.Register(() => LocalChangedDataQueue.Complete());
+        ChangedDataCancellationTokenSource.Token.Register(() => RemoteChangedDataQueue.Complete());
 
-        ChangedDataQueueTask = CreateChangedDataQueueTask();
+        LocalChangedDataQueueTask = CreateLocalChangedDataQueueTask();
+        RemoteChangedDataQueueTask = CreateRemoteChangedDataQueueTask();
 
         watcher = new FileSystemWatcher
         {
@@ -820,20 +835,50 @@ public partial class SyncProvider : IDisposable
     }
 
 
-
-    private Task CreateChangedDataQueueTask()
+    private Task CreateLocalChangedDataQueueTask()
     {
         return Task.Factory.StartNew(async () =>
         {
-            while (!ChangedDataQueue.CancellationToken.IsCancellationRequested)
+            while (!LocalChangedDataQueue.CancellationToken.IsCancellationRequested)
             {
-                string item = await ChangedDataQueue.WaitTakeNextAsync().ConfigureAwait(false);
+                string item = await LocalChangedDataQueue.WaitTakeNextAsync().ConfigureAwait(false);
 
-                if (ChangedDataQueue.CancellationToken.IsCancellationRequested) { break; }
+                if (LocalChangedDataQueue.CancellationToken.IsCancellationRequested) { break; }
 
                 if (item != null)
                 {
-                    DisposableObject<string> itemLock = ChangedDataQueue.LockItem(item);
+                    DisposableObject<string> itemLock = LocalChangedDataQueue.LockItemDisposable(item);
+                    try
+                    {
+                        await ProcessFileChanged(item, SyncMode.Local);
+                    }
+                    catch (Exception ex)
+                    {
+                        Styletronix.Debug.LogException(ex);
+                    }
+                    finally
+                    {
+                        // Delay before releasing itemLock
+                        _ = Task.Delay(20).ContinueWith(_ => itemLock.Dispose());
+                    }
+                }
+            }
+        }, LocalChangedDataQueue.CancellationToken, TaskCreationOptions.LongRunning |
+        TaskCreationOptions.RunContinuationsAsynchronously, TaskScheduler.Default).Unwrap();
+    }
+    private Task CreateRemoteChangedDataQueueTask()
+    {
+        return Task.Factory.StartNew(async () =>
+        {
+            while (!RemoteChangedDataQueue.CancellationToken.IsCancellationRequested)
+            {
+                string item = await RemoteChangedDataQueue.WaitTakeNextAsync().ConfigureAwait(false);
+
+                if (RemoteChangedDataQueue.CancellationToken.IsCancellationRequested) { break; }
+
+                if (item != null)
+                {
+                    DisposableObject<string> itemLock = RemoteChangedDataQueue.LockItemDisposable(item);
                     try
                     {
                         await ProcessFileChanged(item, SyncMode.Full);
@@ -849,17 +894,17 @@ public partial class SyncProvider : IDisposable
                     }
                 }
             }
-        }, ChangedDataQueue.CancellationToken, TaskCreationOptions.LongRunning |
+        }, RemoteChangedDataQueue.CancellationToken, TaskCreationOptions.LongRunning |
         TaskCreationOptions.RunContinuationsAsynchronously, TaskScheduler.Default).Unwrap();
     }
+
     private async Task<bool> ProcessFileChanged(string path, SyncMode syncMode)
     {
         try
         {
-            QueuedItemsCountChanged?.Invoke(this, ChangedDataQueue.Count());
-            Styletronix.Debug.WriteLine("ProcessFileChanged: " + path, System.Diagnostics.TraceLevel.Verbose);
+            QueuedItemsCountChanged?.Invoke(this, LocalChangedDataQueue.Count() + RemoteChangedDataQueue.Count());
 
-            await ProcessChangedDataAsync(path,  syncMode, ChangedDataCancellationTokenSource.Token).ConfigureAwait(false);
+            await ProcessChangedDataAsync(path, syncMode, ChangedDataCancellationTokenSource.Token).ConfigureAwait(false);
 
             return true;
         }
@@ -872,7 +917,8 @@ public partial class SyncProvider : IDisposable
                 LastException = ex,
                 LastTry = DateTime.Now,
                 NextTry = DateTime.Now.AddSeconds(20),
-                RetryCount = 0
+                RetryCount = 0,
+                SyncMode = syncMode
             };
 
             FailedDataQueue.AddOrUpdate(path, failedData, (key, current) =>
@@ -880,6 +926,7 @@ public partial class SyncProvider : IDisposable
                 current.LastTry = failedData.LastTry;
                 current.NextTry = failedData.NextTry;
                 current.RetryCount += 1;
+                current.SyncMode = current.SyncMode > failedData.SyncMode ? current.SyncMode : failedData.SyncMode;
                 return current;
             });
             FailedDataQueueChanged?.Invoke(this, FailedDataQueue.Count());
@@ -901,34 +948,12 @@ public partial class SyncProvider : IDisposable
     }
     private async Task ProcessChangedDataAsync(string fullPath, ExtendedPlaceholderState localPlaceHolder, SyncMode syncMode, CancellationToken ctx)
     {
-        //// Get ServerInfo
-        //Placeholder remotePlaceholder = null;
-
-
-        //if (!IsExcludedFile(fullPath) && syncMode == SyncMode.Full)
-        //{
-        //    Styletronix.Debug.WriteLine("ServerProvider.GetFileInfo: " + fullPath);
-        //    GetFileInfoResult getFileResult = await SyncContext.ServerProvider.GetFileInfo(GetRelativePath(fullPath), localPlaceHolder.IsDirectory);
-        //    remotePlaceholder = getFileResult.Placeholder;
-
-        //    // Handle new local file or file on server deleted
-        //    if (getFileResult.Status == NtStatus.STATUS_NOT_A_CLOUD_FILE)
-        //    {
-        //        // File not found on Server.... New local file or File deleted on Server.
-        //        // Do not raise any exception and continue processing
-        //        remotePlaceholder = null;
-        //    }
-        //    else
-        //    {
-        //        getFileResult.ThrowOnFailure();
-        //    }
-        //}
-
         await ProcessChangedDataAsync(fullPath, localPlaceHolder, new DynamicServerPlaceholder(GetRelativePath(fullPath), localPlaceHolder.IsDirectory, this.SyncContext), syncMode, ctx);
     }
     private async Task ProcessChangedDataAsync(string fullPath, ExtendedPlaceholderState localPlaceHolder, DynamicServerPlaceholder remotePlaceholder, SyncMode syncMode, CancellationToken ctx)
     {
         string relativePath = GetRelativePath(fullPath);
+        Styletronix.Debug.WriteLine("ProcessFileChanged: " + relativePath, System.Diagnostics.TraceLevel.Verbose);
 
         // Convert to placeholder if required
         if (!localPlaceHolder.ConvertToPlaceholder(false))
@@ -1014,7 +1039,7 @@ public partial class SyncProvider : IDisposable
                 !localPlaceHolder.PlaceholderState.HasFlag(CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_PARTIAL))
             {
                 // Local File changed: Upload to Server
-                if (await remotePlaceholder.GetPlaceholder() == null || ( localPlaceHolder.LastWriteTime > (await remotePlaceholder.GetPlaceholder()).LastWriteTime))
+                if (await remotePlaceholder.GetPlaceholder() == null || (localPlaceHolder.LastWriteTime > (await remotePlaceholder.GetPlaceholder()).LastWriteTime))
                 {
                     await UploadFileToServer(fullPath, ctx);
                     localPlaceHolder.Reload();
@@ -1477,7 +1502,7 @@ public partial class SyncProvider : IDisposable
             if (disposing)
             {
                 fileRangeManager?.Dispose();
-                ChangedDataQueue?.Dispose();
+                LocalChangedDataQueue?.Dispose();
             }
 
             disposedValue = true;
