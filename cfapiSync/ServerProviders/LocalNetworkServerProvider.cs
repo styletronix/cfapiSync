@@ -14,7 +14,7 @@ public partial class LocalNetworkServerProvider : IServerFileProvider
             ServerPath = ServerPath,
             UseRecycleBin = true,
             UseRecycleBinForChangedFiles = true,
-            UseTempFilesForUpload = true
+            UseTempFilesForUpload = false
         };
 
         preferredServerProviderSettings = new()
@@ -58,6 +58,7 @@ public partial class LocalNetworkServerProvider : IServerFileProvider
     }
     public void FullResyncTimerCallback(object state)
     {
+        //  TODO: Sync on reconnect.
         RaiseFileChanged(new() { ChangeType = WatcherChangeTypes.All, ResyncSubDirectories = true });
     }
     public Task<GenericResult> Connect()
@@ -601,6 +602,7 @@ public partial class LocalNetworkServerProvider : IServerFileProvider
                 await fileStream.FlushAsync();
                 fileStream.Close();
                 isClosed = true;
+                fileStream.Dispose();
 
                 string pFile = fullPath;
                 if (provider.Parameter.UseTempFilesForUpload)
@@ -610,12 +612,15 @@ public partial class LocalNetworkServerProvider : IServerFileProvider
 
                 try
                 {
-                    if (param.FileInfo.FileAttributes > 0) { File.SetAttributes(pFile, param.FileInfo.FileAttributes); }
+                    var att = param.FileInfo.FileAttributes;
+                        att &= ~FileAttributes.ReadOnly;
+
+                    if (param.FileInfo.FileAttributes > 0) { File.SetAttributes(pFile, att); }
                     if (param.FileInfo.CreationTime > DateTime.MinValue) { File.SetCreationTime(pFile, param.FileInfo.CreationTime); }
-                    //if (this.param.FileInfo.LastAccessTime > DateTime.MinValue) { File.SetLastAccessTime(pFile, this.param.FileInfo.LastAccessTime); }
-                    //if (this._Params.FileInfo.LastWriteTime > DateTime.MinValue) { File.SetLastWriteTime(pFile, this._Params.FileInfo.LastWriteTime); }
+                    if (this.param.FileInfo.LastAccessTime > DateTime.MinValue) { File.SetLastAccessTime(pFile, this.param.FileInfo.LastAccessTime); }
+                    if (param.FileInfo.LastWriteTime > DateTime.MinValue) { File.SetLastWriteTime(pFile, param.FileInfo.LastWriteTime); }
                 }
-                catch (IOException ex)
+                catch (Exception ex)
                 {
                     System.Diagnostics.Debug.WriteLine(ex);
                 }

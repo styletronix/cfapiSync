@@ -26,12 +26,12 @@ namespace CfapiSync_GUI
                               progressBar1.Value = Progress;
 
 
-                              textBox1.SuspendLayout();
+                              //textBox1.SuspendLayout();
                               while (MessageQueue.TryDequeue(out string message))
                               {
                                   textBox1.AppendText(message + "\r\n");
                               }
-                              textBox1.ResumeLayout();
+                              //textBox1.ResumeLayout();
                           });
             }
             finally
@@ -61,15 +61,18 @@ namespace CfapiSync_GUI
                         textBox_serverPath.Text = param;
                         anyCMD = true;
                         break;
+
                     case "/localpath":
                         textBox_localPath.Text = param;
                         anyCMD = true;
                         hasLocalPath = true;
                         break;
+
                     case "/caption":
                         textBox_Caption.Text = param;
                         anyCMD = true;
                         break;
+
                 }
                 i += 2;
             }
@@ -193,6 +196,5 @@ namespace CfapiSync_GUI
             refreshUITimer?.Change(System.Threading.Timeout.Infinite, System.Threading.Timeout.Infinite);
             refreshUITimer?.Dispose();
         }
-
     }
 }

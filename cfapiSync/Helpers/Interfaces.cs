@@ -230,7 +230,8 @@ namespace Styletronix.CloudSyncProvider
     public enum SyncMode
     {
         Local = 0,
-        Full = 1
+        Full = 1,
+        FullQueue = 2
     }
 
     //The Dynamic Placeholder provides a way to supply a already downloaded remote placeholder or to get the remote placeholder on demand instead of always downloading remote date even if it may not be required.
