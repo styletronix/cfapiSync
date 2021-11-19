@@ -7,6 +7,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Threading.Tasks.Dataflow;
 using Vanara.Extensions;
 using Vanara.PInvoke;
 using Windows.Storage.Provider;
@@ -63,6 +64,8 @@ public partial class SyncProvider : IDisposable
 
         FailedQueueTimer = new(FailedQueueTimerCallback, null, Timeout.Infinite, Timeout.Infinite);
         LocalSyncTimer = new(LocalSyncTimerCallback, null, Timeout.Infinite, Timeout.Infinite);
+
+        SyncActionBlock = new(SyncAction, new ExecutionDataflowBlockOptions { MaxDegreeOfParallelism = 8, });
     }
 
     private async void FailedQueueTimerCallback(object state)
@@ -321,12 +324,17 @@ public partial class SyncProvider : IDisposable
     //        CfUpdateSyncProviderStatus(SyncContext.ConnectionKey, CF_SYNC_PROVIDER_STATUS.CF_PROVIDER_STATUS_IDLE);
     //    }
     //}
+
+
+    private Task SyncAction(SyncDataParam data)
+    {
+        return SyncDataAsyncRecursive(data.Folder, data.Ctx, data.SyncMode);
+    }
+
     public async Task SyncDataAsync(SyncMode syncMode, string relativePath, CancellationToken ctx)
     {
         if (MaintenanceInProgress)
-        {
             return;
-        }
 
         switch (syncMode)
         {
@@ -427,6 +435,13 @@ public partial class SyncProvider : IDisposable
         return localPlaceholders;
     }
 
+    private ActionBlock<SyncDataParam> SyncActionBlock;
+    public class SyncDataParam
+    {
+        public string Folder;
+        public SyncMode SyncMode;
+        public CancellationToken Ctx;
+    }
 
 
     private async Task<bool> SyncDataAsyncRecursive(string folder, CancellationToken ctx, SyncMode syncMode)
@@ -490,9 +505,20 @@ public partial class SyncProvider : IDisposable
                             isExcludedFile ||
                             localPlaceholder.PlaceholderInfoStandard.PinState == CF_PIN_STATE.CF_PIN_STATE_PINNED)
                         {
-                            if (await SyncDataAsyncRecursive(fullFilePath, ctx, syncMode))
+                            if (syncMode == SyncMode.Full)
                             {
+                                await SyncActionBlock.SendAsync(new SyncDataParam
+                                {
+                                    Ctx = ctx,
+                                    Folder = fullFilePath,
+                                    SyncMode = syncMode
+                                });
                                 anyFileHydrated = true;
+                            }
+                            else
+                            {
+                                if (await SyncDataAsyncRecursive(fullFilePath, ctx, syncMode))
+                                    anyFileHydrated = true;
                             }
                         }
                         else
@@ -519,8 +545,21 @@ public partial class SyncProvider : IDisposable
                             AddFileToLocalChangeQueue(fullFilePath, true);
                         }
 
-                        if (await SyncDataAsyncRecursive(fullFilePath, ctx, syncMode))
+                        if (syncMode == SyncMode.Full)
+                        {
+                            await SyncActionBlock.SendAsync(new SyncDataParam
+                            {
+                                Ctx = ctx,
+                                Folder = fullFilePath,
+                                SyncMode = syncMode
+                            });
                             anyFileHydrated = true;
+                        }
+                        else
+                        {
+                            if (await SyncDataAsyncRecursive(fullFilePath, ctx, syncMode))
+                                anyFileHydrated = true;
+                        }
                     }
                 }
                 else
@@ -731,7 +770,7 @@ public partial class SyncProvider : IDisposable
     //    return RevertAllPlaceholders(new CancellationToken());
     //}
 
-    private  bool MaintenanceInProgress = false;
+    private bool MaintenanceInProgress = false;
 
     //public async Task RevertAllPlaceholders(CancellationToken ctx)
     //{

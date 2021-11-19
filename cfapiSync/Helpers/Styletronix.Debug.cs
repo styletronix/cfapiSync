@@ -5,7 +5,7 @@ namespace Styletronix
 {
     public class Debug
     {
-        public static System.Diagnostics.TraceSwitch generalSwitch = new("General", "Entire Application") { Level = System.Diagnostics.TraceLevel.Verbose };
+        public static System.Diagnostics.TraceSwitch generalSwitch = new("General", "Entire Application") { Level = System.Diagnostics.TraceLevel.Info };
 
         public static void LogResponse(HRESULT hResult)
         {
