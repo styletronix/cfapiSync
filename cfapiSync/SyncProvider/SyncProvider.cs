@@ -65,9 +65,27 @@ public partial class SyncProvider : IDisposable
         FailedQueueTimer = new(FailedQueueTimerCallback, null, Timeout.Infinite, Timeout.Infinite);
         LocalSyncTimer = new(LocalSyncTimerCallback, null, Timeout.Infinite, Timeout.Infinite);
 
-        SyncActionBlock = new(SyncAction, new ExecutionDataflowBlockOptions { MaxDegreeOfParallelism = 8, });
-    }
+        SyncActionBlock = new(SyncAction, new ExecutionDataflowBlockOptions
+        {
+            MaxDegreeOfParallelism = 8,
+            CancellationToken = this.GlobalShutDownToken
+        });
 
+        ChangedDataQueue = new(ChangedDataAction, new ExecutionDataflowBlockOptions
+        {
+            MaxDegreeOfParallelism = 8,
+            CancellationToken = this.GlobalShutDownToken
+        });
+    }
+    private Task ChangedDataAction(ProcessChangedDataArgs data)
+    {
+        return ProcessChangedDataAsync2(
+            data.FullPath,
+            data.LocalPlaceHolder,
+            data.RemotePlaceholder,
+            data.SyncMode,
+            GlobalShutDownToken);
+    }
     private async void FailedQueueTimerCallback(object state)
     {
         if (SyncContext.ServerProvider.Status != ServerProviderStatus.Connected)
@@ -284,7 +302,7 @@ public partial class SyncProvider : IDisposable
         //}
     }
 
-
+    private bool SyncInProgress;
     public Task SyncDataAsync(SyncMode syncMode)
     {
         return SyncDataAsync(syncMode, "", GlobalShutDownToken);
@@ -333,8 +351,9 @@ public partial class SyncProvider : IDisposable
 
     public async Task SyncDataAsync(SyncMode syncMode, string relativePath, CancellationToken ctx)
     {
-        if (MaintenanceInProgress)
-            return;
+        if(SyncInProgress) return;
+
+        if (MaintenanceInProgress) return;
 
         switch (syncMode)
         {
@@ -356,6 +375,7 @@ public partial class SyncProvider : IDisposable
 
         try
         {
+            SyncInProgress = true;
             await Task.Factory.StartNew(async () =>
             {
                 if (relativePath.Length > 0)
@@ -376,6 +396,7 @@ public partial class SyncProvider : IDisposable
         }
         finally
         {
+            SyncInProgress = false;
             CfUpdateSyncProviderStatus(SyncContext.ConnectionKey, CF_SYNC_PROVIDER_STATUS.CF_PROVIDER_STATUS_IDLE);
         }
     }
@@ -977,7 +998,39 @@ public partial class SyncProvider : IDisposable
     {
         await ProcessChangedDataAsync(fullPath, localPlaceHolder, new DynamicServerPlaceholder(GetRelativePath(fullPath), localPlaceHolder.IsDirectory, this.SyncContext), syncMode, ctx);
     }
-    private async Task ProcessChangedDataAsync(string fullPath, ExtendedPlaceholderState localPlaceHolder, DynamicServerPlaceholder remotePlaceholder, SyncMode syncMode, CancellationToken ctx)
+
+
+    private ActionBlock<ProcessChangedDataArgs> ChangedDataQueue;
+    public class ProcessChangedDataArgs
+    {
+        public string FullPath;
+        public ExtendedPlaceholderState LocalPlaceHolder;
+        public DynamicServerPlaceholder RemotePlaceholder;
+        public SyncMode SyncMode;
+    }
+
+    private Task<bool> AddChangedDataToQueueAsync(string fullPath, ExtendedPlaceholderState localPlaceHolder, DynamicServerPlaceholder remotePlaceholder, SyncMode syncMode)
+    {
+        return ChangedDataQueue.SendAsync(new ProcessChangedDataArgs
+        {
+            SyncMode = syncMode,
+            FullPath = fullPath,
+            LocalPlaceHolder = localPlaceHolder,
+            RemotePlaceholder = remotePlaceholder
+        });
+    }
+
+    private  Task ProcessChangedDataAsync(string fullPath, ExtendedPlaceholderState localPlaceHolder, DynamicServerPlaceholder remotePlaceholder, SyncMode syncMode, CancellationToken ctx)
+    {
+        return ChangedDataQueue.SendAsync(new ProcessChangedDataArgs
+        {
+            SyncMode = syncMode,
+            FullPath = fullPath,
+            LocalPlaceHolder = localPlaceHolder,
+            RemotePlaceholder = remotePlaceholder
+        });
+    }
+    private async Task ProcessChangedDataAsync2(string fullPath, ExtendedPlaceholderState localPlaceHolder, DynamicServerPlaceholder remotePlaceholder, SyncMode syncMode, CancellationToken ctx)
     {
         try
         {
