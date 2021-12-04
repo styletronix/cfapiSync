@@ -47,6 +47,7 @@ namespace Styletronix
                 Debug.WriteLine("GetPlaceholderInfoBasic INVALID Handle! Error " + err + " - " + fullPath, System.Diagnostics.TraceLevel.Warning);
                 return default;
             }
+
             try
             {
                 return GetPlaceholderInfoStandard(h);
@@ -59,23 +60,39 @@ namespace Styletronix
         }
         public static CF_PLACEHOLDER_STANDARD_INFO GetPlaceholderInfoStandard(HFILE FileHandle)
         {
-            int InfoBufferLength = 1024;
-            CF_PLACEHOLDER_STANDARD_INFO ResultInfo = default;
+            Styletronix.Debug.WriteLine("GetPlaceholderInfoStandard by FileHandle", System.Diagnostics.TraceLevel.Verbose);
 
-            using SafeAllocCoTaskMem bufferPointerHandler = new(InfoBufferLength);
-
-            HRESULT ret = CfGetPlaceholderInfo(FileHandle, CF_PLACEHOLDER_INFO_CLASS.CF_PLACEHOLDER_INFO_STANDARD, bufferPointerHandler, (uint)InfoBufferLength, out uint returnedLength);
-
-            if (returnedLength > 0)
+            if (FileHandle.IsInvalid)
             {
-                ResultInfo = Marshal.PtrToStructure<CF_PLACEHOLDER_STANDARD_INFO>(bufferPointerHandler);
-            }
-            else
-            {
-                Styletronix.Debug.WriteLine("GetPlaceholderInfoBasic Failed: " + ((IntPtr)FileHandle).ToString(), System.Diagnostics.TraceLevel.Warning);
+                Debug.WriteLine("GetPlaceholderInfoStandard INVALID Handle!", System.Diagnostics.TraceLevel.Warning);
+                return default;
             }
 
-            return ResultInfo;
+            try
+            {
+                int InfoBufferLength = 1024;
+                CF_PLACEHOLDER_STANDARD_INFO ResultInfo = default;
+
+                using SafeAllocCoTaskMem bufferPointerHandler = new(InfoBufferLength);
+
+                HRESULT ret = CfGetPlaceholderInfo(FileHandle, CF_PLACEHOLDER_INFO_CLASS.CF_PLACEHOLDER_INFO_STANDARD, bufferPointerHandler, (uint)InfoBufferLength, out uint returnedLength);
+
+                if (returnedLength > 0)
+                {
+                    ResultInfo = Marshal.PtrToStructure<CF_PLACEHOLDER_STANDARD_INFO>(bufferPointerHandler);
+                }
+                else
+                {
+                    Styletronix.Debug.WriteLine("GetPlaceholderInfoStandard Failed: " + ((IntPtr)FileHandle).ToString(), System.Diagnostics.TraceLevel.Warning);
+                }
+
+                return ResultInfo;
+            }
+            catch (Exception e)
+            {
+                Debug.WriteLine("GetPlaceholderInfoStandard FAILED: " + e.Message, System.Diagnostics.TraceLevel.Error);
+                return default;
+            }
         }
         public static CF_PLACEHOLDER_BASIC_INFO GetPlaceholderInfoBasic(HFILE FileHandle)
         {
